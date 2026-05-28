@@ -1,0 +1,18 @@
+services:
+  neo4j:
+    image: neo4j:5
+    container_name: neo4j-haive
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - ${HOME}/neo4j/data:/data
+      - ${HOME}/neo4j/logs:/logs
+    environment:
+      NEO4J_AUTH: ${NEO4J_AUTH:?NEO4J_AUTH not set — copy .env.example to .env and edit it}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

@@ -1,0 +1,45 @@
+[project]
+name = "haive"
+version = "0.1.0"
+description = "Haive — Python project with OpenAI + Neo4j"
+requires-python = ">=3.14"
+dependencies = [
+    "openai>=1.54.0",
+    "python-dotenv>=1.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.7.0",
+    "pyright>=1.1.380",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort (import order)
+    "B",   # flake8-bugbear (likely bugs)
+    "UP",  # pyupgrade (modernize syntax)
+    "SIM", # flake8-simplify
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pyright]
+include = ["."]
+exclude = [".venv", "**/__pycache__"]
+pythonVersion = "3.14"
+typeCheckingMode = "standard"
+reportMissingImports = "error"
+reportMissingTypeStubs = "warning"
+
+[tool.uv]
+default-groups = ["dev"]
