@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Haive — Python project with OpenAI + Neo4j"
 requires-python = ">=3.14"
 dependencies = [
+    "neo4j>=6.2.0",
     "openai>=1.54.0",
+    "pydantic>=2.13.4",
     "python-dotenv>=1.0.1",
 ]
 
@@ -32,6 +34,7 @@ select = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+indent-width = 4
 
 [tool.pyright]
 include = ["."]

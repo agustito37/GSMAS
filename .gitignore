@@ -1,5 +1,10 @@
 .venv/
 .env
 __pycache__/
+.ruff_cache/
 *.pyc
 .DS_Store
+docs/
+CLAUDE.md
+clipboard.py
+.vscode/
