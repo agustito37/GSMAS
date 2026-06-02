@@ -14,11 +14,15 @@ dependencies = [
 dev = [
     "ruff>=0.7.0",
     "pyright>=1.1.380",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "testcontainers[neo4j]>=4.0.0",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py314"
+indent-width = 4
 
 [tool.ruff.lint]
 select = [
@@ -34,7 +38,6 @@ select = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
-indent-width = 4
 
 [tool.pyright]
 include = ["."]
@@ -43,6 +46,15 @@ pythonVersion = "3.14"
 typeCheckingMode = "standard"
 reportMissingImports = "error"
 reportMissingTypeStubs = "warning"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+addopts = "-m 'not integration'"
+markers = [
+    "integration: requires a real Neo4j (started via testcontainers/Docker)",
+]
 
 [tool.uv]
 default-groups = ["dev"]
