@@ -12,9 +12,11 @@ import pytest
 import pytest_asyncio
 from neo4j import AsyncGraphDatabase
 from testcontainers.neo4j import Neo4jContainer
+
 from core.graph.store import GraphStore
 
 _NEO4J_IMAGE = "neo4j:5"
+
 
 @pytest.fixture(scope="session")
 def neo4j_container():

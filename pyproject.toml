@@ -54,6 +54,7 @@ asyncio_mode = "auto"
 addopts = "-m 'not integration'"
 markers = [
     "integration: requires a real Neo4j (started via testcontainers/Docker)",
+    "unit: fast test with no external dependencies",
 ]
 
 [tool.uv]

@@ -4,9 +4,12 @@ Run with:
     uv run pytest
 """
 
+import pytest
+
 from core.graph.models import Case
 
 
+@pytest.mark.unit
 def test_case_backfills_case_id_with_its_own_id():
     """A Case is the root of its own subgraph: when case_id is left empty, the
     model validator backfills it with the node's own id (see models.Case)."""
