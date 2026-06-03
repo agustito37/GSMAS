@@ -1,4 +1,4 @@
-"""Structural graph invariants (§3.2 of the design).
+"""Structural graph invariants.
 
 Each invariant is a multi-node property checked by traversing the case subgraph.
 The checks are expressed entirely over the GraphStore's domain API (query_nodes +
@@ -18,9 +18,9 @@ from core.graph.store import GraphStore
 
 @dataclass(frozen=True)
 class InvariantViolation:
-    invariant: str  # name of the violated invariant
-    detail: str  # readable description
-    node_ids: tuple[str, ...] = ()  # nodes involved
+    invariant: str
+    detail: str
+    node_ids: tuple[str, ...] = ()
 
     def __str__(self) -> str:
         nodes = f" [{', '.join(self.node_ids)}]" if self.node_ids else ""
@@ -115,7 +115,7 @@ async def check_mandatory_validation(store: GraphStore, case_id: str) -> list[In
     evidence itself —the one with an outgoing VALIDATES— is excluded: it is not
     recursively validated.
 
-    Interpretation: the Verdict does not link Evidence by edge (§3.1: its
+    Interpretation: the Verdict does not link Evidence by edge (its
     substantive content lives in attributes), so the invariant is operated over
     the evidence that backs hypotheses. It applies in full to a `confirmed`/
     `refuted` Verdict; under `inconclusive` there may be unvalidated evidence due
