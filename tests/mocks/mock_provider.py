@@ -1,6 +1,9 @@
 from collections.abc import Iterable
+
 from pydantic import BaseModel
+
 from core.providers.base import LLMProvider, LLMResponse
+
 
 class MockProvider(LLMProvider):
     """Returns predefined responses in order. Lets tests run the full agent/event

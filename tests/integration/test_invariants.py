@@ -52,6 +52,7 @@ async def _build_valid_subgraph(store) -> str:
         (verdict, "Verdict"),
     ]:
         await store.create_node(node, label=label)
+
     await store.create_edge(signal.id, case.id, "OPENS")
     await store.create_edge(case.id, hypothesis.id, "DERIVES")
     await store.create_edge(hypothesis.id, investigation.id, "TESTS")
@@ -61,6 +62,7 @@ async def _build_valid_subgraph(store) -> str:
     await store.create_edge(evidence.id, hypothesis.id, "SUPPORTS")
     await store.create_edge(validation.id, evidence.id, "VALIDATES")
     await store.create_edge(case.id, verdict.id, "CONCLUDES")
+
     return case.id
 
 

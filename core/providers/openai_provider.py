@@ -1,7 +1,10 @@
 import json
+
 from openai import AsyncOpenAI
 from pydantic import BaseModel
+
 from core.providers.base import LLMProvider, LLMResponse, ToolCall
+
 
 class OpenAIProvider(LLMProvider):
     """LLMProvider based on the official OpenAI SDK (async)."""

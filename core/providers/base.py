@@ -1,15 +1,19 @@
 from abc import ABC, abstractmethod
+
 from pydantic import BaseModel
+
 
 class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict  # parsed from the model's JSON arguments
 
+
 class LLMResponse(BaseModel):
     content: str
     tool_calls: list[ToolCall] = []
     usage: dict = {}  # e.g. {"input_tokens": ..., "output_tokens": ...}
+
 
 class LLMProvider(ABC):
     """Provider-agnostic async LLM interface.
