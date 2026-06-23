@@ -193,3 +193,33 @@ async def test_event_bus_aclose():
     await bus.aclose()
 
     assert len(done) == 1  # aclose waited for it to finish
+
+
+@pytest.mark.unit
+async def test_unsubscribe_stops_delivery():
+    """After unsubscribe, the handler no longer receives events of that key."""
+    bus = EventBus()
+    received = []
+
+    def handler(event):
+        received.append(event.node_id)
+
+    bus.subscribe("node_created", handler, node_type="Case")
+    bus.publish(Event(type="node_created", node_id="c1", node_type="Case"))
+    bus.unsubscribe("node_created", handler, node_type="Case")
+    bus.publish(Event(type="node_created", node_id="c2", node_type="Case"))
+    await bus.aclose()
+
+    assert received == ["c1"]  # only the event published before unsubscribe
+
+
+@pytest.mark.unit
+def test_unsubscribe_unknown_handler_is_noop():
+    """Unsubscribing a handler that was never registered does not raise."""
+    bus = EventBus()
+
+    def handler(event):
+        pass
+
+    bus.unsubscribe("node_created", handler, node_type="Case")  # must not raise
+    assert handler not in bus._handlers.get(("node_created", "Case"), [])

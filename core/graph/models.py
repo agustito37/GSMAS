@@ -10,11 +10,23 @@ class NodeBase(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     created_by_agent_id: str | None = None
 
+class Claimable(BaseModel):
+    """Mixin for work nodes the runtime can claim. `claim_state` is the framework's
+    work lifecycle, SEPARATE from any domain status:
+        pending -> free | claimed -> an agent holds it | done -> finished | failed -> gave up
+    `attempts` counts failed tries; at MAX_ATTEMPTS the node goes 'failed' instead of
+    back to 'pending' (no infinite retries). The GraphStore writes all of this
+    atomically; roles never touch it. `claimed_by_agent_id` records the holder (for
+    orphan recovery), filled once the Agent node lifecycle exists."""
+
+    claim_state: Literal["pending", "claimed", "done", "failed"] = "pending"
+    claimed_by_agent_id: str | None = None
+    attempts: int = 0
 
 # local nodes (Case-scoped)
 
 
-class InputSignal(NodeBase):
+class InputSignal(NodeBase, Claimable):
     raw_content: str
 
 
@@ -41,18 +53,12 @@ class Hypothesis(CaseNode):
     status: Literal["active", "refuted", "confirmed"] = "active"
 
 
-class Investigation(CaseNode):
+class Investigation(CaseNode, Claimable):
     description: str
-    status: Literal[
-        "pending_dispatch",
-        "blocked",
-        "in_progress",
-        "skipped",
-        "validated",
-        "rejected",
-    ] = "pending_dispatch"
+    status: Literal["blocked", "skipped", "validated", "rejected"] | None = None
     assigned_role_id: str | None = None
-    executor_agent_id: str | None = None
+    executor_agent_id: str | None = None  # overlaps claimed_by_agent_id; unify with
+    #   the Agent node lifecycle (the claimer IS the executor).
     condition: str | None = None
     skip_reason: str | None = None
 

@@ -1,60 +1,78 @@
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
-from core.events.bus import EventBus, Handler
-from core.graph.models import Role
+from core.graph.models import NodeBase
 from core.graph.store import GraphStore
 from core.providers.base import LLMProvider
 
+MAX_ATTEMPTS = 3  # retries of one unit of work before it is marked 'failed' and dropped
 
-class Agent(ABC):
-    """Base agent: reacts to graph events relevant to its role.
+ClaimFn = Callable[[], Awaitable[NodeBase | None]]
+ExecuteFn = Callable[["Agent"], Awaitable[None]]
 
-    Agents are ephemeral and interchangeable within a role. They never message one
-    another, they read the graph (pull) and mutate it; the bus only points them
-    at what changed. All coordination lives in the graph (stigmergy).
-    """
+@dataclass(frozen=True)
+class Reaction:
+    """One reactive behavior of a role: which events wake it (triggers), what work
+    it then claims from the graph (claim), and how an agent runs that work (execute).
+    Keeping the three together makes each line of work self-contained, so a role can
+    have several independent ones without coupling them through a single dispatch."""
+    triggers: set[tuple[str, str | None]]
+    claim: ClaimFn
+    execute: ExecuteFn
 
-    def __init__(self, agent_id: str, role: Role, store: GraphStore, bus: EventBus) -> None:
-        self.id = agent_id
-        self.role = role
+class Role(ABC):
+    """A role. Register ONE instance. It declares its reactions and carries the
+    shared dependencies (store, provider) but NO per-work state, agents carry that,
+    so a single role instance is used by many concurrent agents safely."""
+
+    def __init__(self, store: GraphStore) -> None:
         self.store = store
-        self.bus = bus
 
     @abstractmethod
-    def subscriptions(self) -> dict[tuple[str, str | None], Handler]:
-        """Map each (event_type, node_type) to the method that handles it;
-        node_type None means 'any'. One method per responsibility, no monolithic
-        handler. E.g. a Verifier returns {("node_created", "Evidence"): self.on_evidence}."""
-        ...
+    def reactions(self) -> list[Reaction]:
+        """The role's reactive behaviors, one per independent line of work. Each
+        Reaction binds the events that wake it, the claim that pulls its pending unit
+        from the graph (atomic SET ... WHERE so a unit is never taken twice), and the
+        execute an agent runs on that unit. Mono-purpose roles return one Reaction."""
 
-    def start(self) -> None:
-        """Register this agent's handlers on the bus, per its subscriptions."""
-        for (event_type, node_type), handler in self.subscriptions().items():
-            self.bus.subscribe(event_type, handler, node_type=node_type)
+    # on_failure is an optional hook with a default no-op; not @abstractmethod on purpose.
+    async def on_failure(self, work: NodeBase) -> None:  # noqa: B027
+        """Optional hook called AFTER the framework's retry guard ran (store.fail
+        already incremented attempts and moved the node to pending or failed). For
+        custom cleanup/logging only; default no-op."""
 
+class LLMRole(Role):
+    """A role backed by an LLM (the domain roles + the LLM system roles). The model
+    is a parameter of the role, not of the architecture (provider-agnostic)."""
 
-class LLMAgent(Agent):
-    """An agent backed by an LLM. The model is a parameter of the agent, not of
-    the architecture (provider-agnostic): two agents of the same role may run on
-    different providers and still share the role's LTM."""
-
-    def __init__(
-        self,
-        agent_id: str,
-        role: Role,
-        store: GraphStore,
-        bus: EventBus,
-        provider: LLMProvider,
-    ) -> None:
-        super().__init__(agent_id, role, store, bus)
+    def __init__(self, store: GraphStore, provider: LLMProvider) -> None:
+        super().__init__(store)
         self.provider = provider
-        # STM, the working context (message list) for THIS agent's single
-        # unit of work. Per-instance is safe under the ephemeral model: one agent
-        # handles one unit of work and is discarded; it never serves two at once.
-        # In memory, private, never persisted (what must survive goes to the graph).
-        self._messages: list[dict] = []
 
+class DeterministicRole(Role):
+    """A role with no LLM: applies structural rules over the graph (e.g. recovery).
+    Inherits Role.__init__ unchanged."""
 
-class DeterministicAgent(Agent):
-    """An agent with no LLM: applies structural rules over the graph (e.g. the
-    Monitor). Used wherever the task is structural rather than linguistic."""
+class Agent:
+    """Ephemeral execution unit. COMPOSES the registered role (a reference) plus the
+    per-execution state: the work (a graph node), its own STM, and the reaction's
+    execute. Drives its claim lifecycle: complete() on success, fail() on error
+    (bounded by MAX_ATTEMPTS)."""
+
+    def __init__(self, role: Role, execute: ExecuteFn, work: NodeBase) -> None:
+        self.role = role  # composition: shared store/provider, and on_failure
+        self.work = work  # the graph node this agent processes; the role knows its concrete type
+        self.messages: list[dict] = []  # STM, isolated per agent
+        self._execute = execute  # the reaction's execute, bound to this work
+
+    async def run(self) -> None:
+        await self._execute(self)  # delegate to the reaction's logic
+
+    async def complete(self) -> None:
+        await self.role.store.complete(self.work.id)  # claimed -> done
+
+    async def fail(self) -> None:
+        # framework guard FIRST (increment + pending-or-failed), then optional role hook
+        await self.role.store.fail(self.work.id, MAX_ATTEMPTS)
+        await self.role.on_failure(self.work)

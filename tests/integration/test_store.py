@@ -245,6 +245,53 @@ async def test_get_pending_investigations_fails_with_unknown_case_id(store):
 
 
 @pytest.mark.integration
+async def test_recover_claimed_returns_to_pending(store):
+    """A node left 'claimed' (orphan from a dead process) is reset to 'pending', its
+    holder cleared, and its attempts incremented."""
+    sig = InputSignal(raw_content="x", claim_state="claimed", claimed_by_agent_id="dead")
+    await store.create_node(sig, "InputSignal")
+
+    recovered = await store.recover_claimed(max_attempts=3)
+
+    assert recovered == 1
+    node = await store.get_node(sig.id)
+    assert node is not None
+    assert node.claim_state == "pending"
+    assert node.claimed_by_agent_id is None
+    assert node.attempts == 1
+
+
+@pytest.mark.integration
+async def test_recover_claimed_marks_failed_after_max_attempts(store):
+    """A claimed node that reaches max_attempts on recovery goes to 'failed', not back
+    to 'pending', so a unit that keeps crashing the process stops looping."""
+    sig = InputSignal(raw_content="x", claim_state="claimed", attempts=2)
+    await store.create_node(sig, "InputSignal")
+
+    await store.recover_claimed(max_attempts=3)  # 2 + 1 = 3 >= 3 -> failed
+
+    node = await store.get_node(sig.id)
+    assert node is not None
+    assert node.claim_state == "failed"
+    assert node.attempts == 3
+
+
+@pytest.mark.integration
+async def test_recover_claimed_ignores_non_claimed(store):
+    """Recovery only touches 'claimed' nodes; a 'pending' one is left untouched."""
+    sig = InputSignal(raw_content="p")  # default claim_state='pending'
+    await store.create_node(sig, "InputSignal")
+
+    recovered = await store.recover_claimed(max_attempts=3)
+
+    assert recovered == 0
+    node = await store.get_node(sig.id)
+    assert node is not None
+    assert node.claim_state == "pending"
+    assert node.attempts == 0
+
+
+@pytest.mark.integration
 async def test_get_active_hypotheses(store):
     """Getting active hypotheses for a case returns the hypotheses."""
     case = Case(objective="demo objective", case_id="")

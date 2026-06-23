@@ -1,89 +1,98 @@
-"""Unit tests for the base agents.
+"""Unit tests for the base Role/Reaction/Agent runtime.
 
 Run with:
     uv run pytest
 """
-
 from typing import cast
 
 import pytest
 
-from core.agents.base import DeterministicAgent, LLMAgent
-from core.events.bus import Event, EventBus, Handler
-from core.graph.models import Role
+from core.agents.base import Agent, DeterministicRole, LLMRole, Reaction
+from core.graph.models import NodeBase
 from core.graph.store import GraphStore
 from tests.mocks.mock_provider import MockProvider
 
-
-def _role() -> Role:
-    return Role(name="theorist", kind="domain", agent_type="llm")
-
-
-# The store is unused by these tests (the agents only keep the reference); a real
+# The store is unused by these tests (roles only keep the reference); a real
 # GraphStore would open a Neo4j driver, so we pass a stand-in.
 _STORE = cast(GraphStore, object())
 
+class _FakeLLMRole(LLMRole):
+    """One reaction whose execute records that it ran on the agent it was handed."""
 
-class _FakeLLMAgent(LLMAgent):
-    def subscriptions(self) -> dict[tuple[str, str | None], Handler]:
-        return {}
+    async def _claim(self) -> NodeBase | None:
+        return None
 
+    async def _run(self, agent: Agent) -> None:
+        agent.messages.append({"executed_by": "llm"})
 
-class _FakeDeterministicAgent(DeterministicAgent):
-    def subscriptions(self) -> dict[tuple[str, str | None], Handler]:
-        return {}
+    def reactions(self) -> list[Reaction]:
+        return [Reaction({("node_created", "InputSignal")}, self._claim, self._run)]
 
+class _FakeDeterministicRole(DeterministicRole):
+    async def _claim(self) -> NodeBase | None:
+        return None
+
+    async def _run(self, agent: Agent) -> None:
+        agent.messages.append({"executed_by": "deterministic"})
+
+    def reactions(self) -> list[Reaction]:
+        return [Reaction({("node_updated", "Investigation")}, self._claim, self._run)]
 
 @pytest.mark.unit
-def test_llm_agent_init():
-    """An LLMAgent keeps its id/role/bus/provider and starts with an empty STM."""
-    role = _role()
-    bus = EventBus()
+def test_llm_role_keeps_store_and_provider():
+    """An LLMRole keeps its store and provider and has no per-work state."""
     provider = MockProvider([])
+    role = _FakeLLMRole(_STORE, provider)
 
-    agent = _FakeLLMAgent("a1", role, _STORE, bus, provider)
-
-    assert agent.id == "a1"
-    assert agent.role is role
-    assert agent.bus is bus
-    assert agent.provider is provider
-    assert agent._messages == []
-
+    assert role.store is _STORE
+    assert role.provider is provider
 
 @pytest.mark.unit
-def test_deterministic_agent_init():
-    """A DeterministicAgent keeps its id/role/bus and has no provider."""
-    role = _role()
-    bus = EventBus()
+def test_deterministic_role_keeps_store_and_has_no_provider():
+    """A DeterministicRole keeps its store and has no provider."""
+    role = _FakeDeterministicRole(_STORE)
 
-    agent = _FakeDeterministicAgent("a2", role, _STORE, bus)
-
-    assert agent.id == "a2"
-    assert agent.role is role
-    assert agent.bus is bus
-    assert not hasattr(agent, "provider")
-
+    assert role.store is _STORE
+    assert not hasattr(role, "provider")
 
 @pytest.mark.unit
-async def test_start_registers_subscriptions_on_the_bus():
-    """start() wires each subscription to the bus, so a matching event reaches the
-    right method and a non-matching node_type is ignored."""
-    bus = EventBus()
-    seen: list[Event] = []
+def test_role_declares_its_reactions():
+    """A role exposes its behaviors as Reactions binding triggers, claim and execute."""
+    role = _FakeDeterministicRole(_STORE)
 
-    class _Agent(DeterministicAgent):
-        def subscriptions(self) -> dict[tuple[str, str | None], Handler]:
-            return {("node_created", "Case"): self.on_case}
+    reactions = role.reactions()
 
-        async def on_case(self, event: Event) -> None:
-            seen.append(event)
+    assert len(reactions) == 1
+    assert reactions[0].triggers == {("node_updated", "Investigation")}
 
-    agent = _Agent("a3", _role(), _STORE, bus)
-    agent.start()
+@pytest.mark.unit
+def test_agent_composes_role_and_starts_with_empty_stm():
+    """An Agent composes the role (a reference, not a copy) and carries the work and
+    an empty STM."""
+    role = _FakeDeterministicRole(_STORE)
+    work = cast(NodeBase, object())
 
-    bus.publish(Event(type="node_created", node_id="c1", node_type="Case"))
-    bus.publish(Event(type="node_created", node_id="e1", node_type="Evidence"))  # ignored
-    await bus.aclose()
+    agent = Agent(role, role.reactions()[0].execute, work)
 
-    assert len(seen) == 1  # only the Case event matched the subscription
-    assert seen[0].node_id == "c1"
+    assert agent.role is role  # composition: the same instance, not a clone
+    assert agent.work is work
+    assert agent.messages == []
+
+@pytest.mark.unit
+async def test_agent_run_delegates_to_reaction_execute():
+    """Agent.run() delegates to the reaction's execute, passing the agent itself, so
+    the logic operates on this agent's state (work + STM)."""
+    role = _FakeLLMRole(_STORE, MockProvider([]))
+    reaction = role.reactions()[0]
+    agent = Agent(role, reaction.execute, work=cast(NodeBase, object()))
+
+    await agent.run()
+
+    assert agent.messages == [{"executed_by": "llm"}]
+
+@pytest.mark.unit
+async def test_role_on_failure_is_noop_by_default():
+    """The base on_failure hook is a no-op: it must not raise."""
+    role = _FakeDeterministicRole(_STORE)
+
+    await role.on_failure(cast(NodeBase, object()))  # must not raise

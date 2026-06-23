@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Callable
 from typing import LiteralString, cast
 
@@ -12,7 +13,7 @@ from core.graph.models import (
 )
 
 # A generic mutation callback: (event_type, node_id, node_type, payload). Using
-# primitives keeps the store fully decoupled from core.events — the orchestrator
+# primitives keeps the store fully decoupled from core.events, the orchestrator
 # wires this to bus.publish.
 OnMutation = Callable[[str, str | None, str | None, dict], None]
 
@@ -21,6 +22,7 @@ class GraphStore:
     def __init__(self, uri: str, user: str, password: str, on_mutation: OnMutation | None = None):
         self._driver = AsyncGraphDatabase.driver(uri, auth=(user, password))
         self._on_mutation = on_mutation
+        self._claim_lock = asyncio.Lock()  # serializes claims (see claim())
 
     async def close(self):
         await self._driver.close()
@@ -147,11 +149,10 @@ class GraphStore:
         )
 
     async def get_pending_investigations(self, case_id: str) -> list[Investigation]:
-        # carries extra logic (state filter), not just following an edge
         return cast(
             list[Investigation],
             await self.query_nodes(
-                "Investigation", {"case_id": case_id, "status": "pending_dispatch"}
+                "Investigation", {"case_id": case_id, "claim_state": "pending"}
             ),
         )
 
@@ -182,3 +183,61 @@ class GraphStore:
                 "signals": [dict(s) for s in record["signals"]],
                 "nodes": [dict(n) for n in record["nodes"]],
             }
+
+    async def claim(self, label: str, filters: dict) -> NodeBase | None:
+        """Find a `label` node with claim_state='pending' matching `filters`, mark it
+        'claimed', and return it (or None if none is free). Serialized by _claim_lock,
+        so claims happen one at a time and two concurrent drains never take the same
+        node (independent of Neo4j's locking). The only place the claim is written."""
+        where = " AND ".join(f"n.{k} = ${k}" for k in filters)
+        query = f"MATCH (n:{label} {{claim_state: 'pending'}})"
+        if where:
+            query += f" WHERE {where}"
+        query += " WITH n LIMIT 1 SET n.claim_state = 'claimed' RETURN n"
+        async with self._claim_lock, self._driver.session() as session:
+            result = await session.run(cast(LiteralString, query), **filters)
+            record = await result.single()
+        return self._to_model(record["n"]) if record else None
+
+    async def complete(self, node_id: str) -> None:
+        """Mark a claimed node finished (claim_state -> 'done'): success, never
+        reclaimed."""
+        query = "MATCH (n {id: $id}) SET n.claim_state = 'done'"
+        async with self._driver.session() as session:
+            await session.run(query, id=node_id)
+
+    async def fail(self, node_id: str, max_attempts: int) -> str:
+        """Record a failed attempt: increment `attempts`; if it reaches max_attempts
+        the node goes to 'failed' (terminal, never reclaimed) instead of back to
+        'pending'. The framework's HARD guard against infinite retries / runaway LLM
+        cost: every path back to the pool goes through here. Returns the new state."""
+        query = """
+            MATCH (n {id: $id})
+            WITH n, coalesce(n.attempts, 0) + 1 AS attempts
+            SET n.attempts = attempts,
+                n.claimed_by_agent_id = null,
+                n.claim_state = CASE WHEN attempts >= $max THEN 'failed' ELSE 'pending' END
+            RETURN n.claim_state AS state
+        """
+        async with self._driver.session() as session:
+            result = await session.run(query, id=node_id, max=max_attempts)
+            record = await result.single()
+        return record["state"] if record else "failed"
+
+    async def recover_claimed(self, max_attempts: int) -> int:
+        """Reset every node stuck in claim_state='claimed' back to 'pending' (or
+        'failed' if it has exhausted its attempts), clearing the holder. Call once at
+        startup: with no agents alive yet, any 'claimed' node is an orphan. Returns
+        how many were touched."""
+        query = """
+            MATCH (n {claim_state: 'claimed'})
+            WITH n, coalesce(n.attempts, 0) + 1 AS attempts
+            SET n.attempts = attempts,
+                n.claimed_by_agent_id = null,
+                n.claim_state = CASE WHEN attempts >= $max THEN 'failed' ELSE 'pending' END
+            RETURN count(n) AS recovered
+        """
+        async with self._driver.session() as session:
+            result = await session.run(query, max=max_attempts)
+            record = await result.single()
+        return record["recovered"] if record else 0

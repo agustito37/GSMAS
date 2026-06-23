@@ -41,7 +41,7 @@ indent-style = "space"
 
 [tool.pyright]
 include = ["."]
-exclude = [".venv", "**/__pycache__"]
+exclude = [".venv", "**/__pycache__", "clipboard.py"]
 pythonVersion = "3.14"
 typeCheckingMode = "standard"
 reportMissingImports = "error"

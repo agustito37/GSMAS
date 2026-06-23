@@ -39,6 +39,13 @@ class EventBus:
         None to receive every node_type for this event (e.g. the Monitor)."""
         self._handlers[(event_type, node_type)].append(handler)
 
+    def unsubscribe(self, event_type: str, handler: Handler, node_type: str | None = None) -> None:
+        """Remove a previously registered handler. No-op if it isn't there. Lets a
+        one-shot subscriber (e.g. wait_for_closure) clean up after itself."""
+        handlers = self._handlers.get((event_type, node_type))
+        if handlers and handler in handlers:
+            handlers.remove(handler)
+
     def publish(self, event: Event) -> None:
         """Fire-and-forget: schedule every subscribed handler as its own task.
 

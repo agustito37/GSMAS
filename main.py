@@ -2,11 +2,7 @@ from openai import OpenAI
 
 import config
 
-client = OpenAI(
-    api_key=config.OPENAI_API_KEY,
-    organization=config.OPENAI_ORG_ID,
-    project=config.OPENAI_PROJECT_ID,
-)
+client = OpenAI(api_key=config.OPENAI_API_KEY)
 
 
 def main() -> None:
