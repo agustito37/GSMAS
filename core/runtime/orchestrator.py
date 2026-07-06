@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from core.agents.base import MAX_ATTEMPTS, Agent, Reaction, Role
 from core.events.bus import Event, EventBus
@@ -6,6 +7,8 @@ from core.graph.models import InputSignal
 from core.graph.store import GraphStore
 from core.runtime.swarm import Swarm
 
+
+logger = logging.getLogger("haive.orchestrator")
 
 class Orchestrator:
     """System runtime. Builds the generic pieces (bus, store, swarm), registers roles,
@@ -33,6 +36,10 @@ class Orchestrator:
     def store(self) -> GraphStore:
         return self._store  # domain builds roles with this, then registers them
 
+    @property
+    def bus(self):
+        return self._bus  # read-only observers (e.g. the dashboard) subscribe here
+
     # ---- registration / wiring ----
     def register(self, role: Role) -> None:
         """Register a role instance and wire each of its reactions to the bus. On a
@@ -58,7 +65,12 @@ class Orchestrator:
         """Spawn the worker pool, recover any 'claimed' orphans left by a previous
         process (startup sweep), then do the initial drain across every reaction."""
         self._swarm.start()
-        await self._store.recover_claimed(MAX_ATTEMPTS)
+        recovered = await self._store.recover_claimed(MAX_ATTEMPTS)
+        logger.info(
+            "started: %d roles registered, %d orphaned unit(s) recovered",
+            len(self._roles),
+            recovered,
+        )
         for role in self._roles:
             for reaction in role.reactions():
                 await self._drain(role, reaction)

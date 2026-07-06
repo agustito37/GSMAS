@@ -1,4 +1,6 @@
 import asyncio
+import logging
+
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, LiteralString, cast
@@ -14,6 +16,8 @@ from core.graph.models import (
     NodeBase,
     to_model,
 )
+
+logger = logging.getLogger("haive.store")
 
 # A generic mutation callback: (event_type, node_id, node_type, payload). Using
 # primitives keeps the store fully decoupled from core.events, the orchestrator
@@ -278,6 +282,7 @@ class GraphStore:
                 node_type=record["label"],
                 changes={"claim_state": "failed"},
             )
+            logger.warning("work unit %s exhausted its attempts -> failed", node_id[:8])
         return state
 
     async def recover_claimed(self, max_attempts: int) -> int:
@@ -350,6 +355,7 @@ class GraphStore:
                 node_type=record["label"],
                 changes={"status": "skipped", "skip_reason": reason},
             )
+            logger.info("skipped %s: %s", node_id[:8], reason)
         return record is not None
 
     async def create_suggested_hypothesis(
@@ -390,3 +396,21 @@ class GraphStore:
         )
         self._emit("edge_created", from_id=evidence_id, to_id=hypothesis.id, edge_type="SUGGESTS")
         return True
+
+    async def get_full_graph(self) -> dict:
+        """Every node and edge as plain dicts (the dashboard's connect snapshot).
+        Visualization only: models are not needed, and unknown/legacy properties
+        must survive as-is."""
+        async with self._driver.session() as session:
+            result = await session.run("MATCH (n) RETURN n")
+            nodes = [
+                {"label": list(record["n"].labels)[0], "props": dict(record["n"])}
+                async for record in result
+            ]
+        async with self._driver.session() as session:
+            result = await session.run(
+                "MATCH (a)-[r]->(b) RETURN a.id AS source, type(r) AS type, b.id AS target"
+            )
+            edges = [dict(record) async for record in result]
+        return {"nodes": nodes, "edges": edges}
+

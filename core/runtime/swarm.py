@@ -1,7 +1,10 @@
 import asyncio
+import logging
 
 from core.agents.base import Agent
 
+
+logger = logging.getLogger("haive.swarm")
 
 class Swarm:
     """The swarm's capacity, as a producer/consumer queue: a FIFO work queue with
@@ -32,9 +35,16 @@ class Swarm:
             try:
                 await agent.run()
             except Exception:
-                await agent.fail()  # run failed: increment attempts; pending or failed
+                # the failure is handled (fail() bounds retries) but must be SEEN:
+                # without this line a broken role dies silently, attempt after attempt
+                logger.exception(
+                    "agent failed (role=%s, work=%s)",
+                    type(agent.role).__name__,
+                    agent.work.id,
+                )
+                await agent.fail()
             else:
-                await agent.complete()  # run succeeded: claimed -> done
+                await agent.complete()
 
     async def aclose(self) -> None:
         for worker in self._workers:

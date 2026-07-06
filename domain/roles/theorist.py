@@ -1,3 +1,4 @@
+import logging
 from typing import cast
 
 from pydantic import BaseModel
@@ -5,6 +6,8 @@ from pydantic import BaseModel
 from core.agents.base import Agent, LLMRole, Reaction
 from core.graph.models import Case, Evidence, Hypothesis, InputSignal, NodeBase
 from core.graph.store import EdgeSpec
+
+logger = logging.getLogger("haive.theorist")
 
 BRANCH_LIMIT = 4  # max hypotheses per branch (root_id); the generation hard stop
 TRIAGE_MAX_ATTEMPTS = 3  # failed judgments on one Evidence before giving up on it
@@ -141,6 +144,12 @@ class Theorist(LLMRole):
         ]
         response = await self.provider.complete(messages, response_schema=_TriageOutput)
         out = _TriageOutput.model_validate_json(response.content)
+        logger.info(
+            "triage of evidence %s: %d new hypothesis(es), %d refutation(s)",
+            evidence.id[:8],
+            len(out.new_hypotheses),
+            len(out.refuted),
+        )
 
         for new in out.new_hypotheses:
             hypothesis = Hypothesis(
@@ -150,7 +159,17 @@ class Theorist(LLMRole):
                 # inherit the branch of the hypothesis whose evidence suggested it
                 root_id=parent.root_id if parent else "",
             )
-            await self.store.create_suggested_hypothesis(hypothesis, evidence.id, BRANCH_LIMIT)
+            created = await self.store.create_suggested_hypothesis(
+                hypothesis,
+                evidence.id,
+                BRANCH_LIMIT,
+            )
+            if not created:
+                logger.warning(
+                    "branch %s full (%d): suggested hypothesis NOT created",
+                    hypothesis.root_id[:8],
+                    BRANCH_LIMIT,
+                )
 
         for refutation in out.refuted:
             if refutation.hypothesis_id not in known_ids:
@@ -194,4 +213,9 @@ class Theorist(LLMRole):
         attempts = self._triage_attempts.get(work.id, 0) + 1
         self._triage_attempts[work.id] = attempts
         if attempts >= TRIAGE_MAX_ATTEMPTS:
+            logger.warning(
+                "giving up on triaging evidence %s after %d attempts: marked triaged",
+                work.id[:8],
+                attempts,
+            )
             await self.store.update_node(work.id, {"triaged": True})
