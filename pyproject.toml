@@ -47,6 +47,11 @@ typeCheckingMode = "standard"
 reportMissingImports = "error"
 reportMissingTypeStubs = "warning"
 
+[tool.basedpyright]
+# keep the IDE's basedpyright aligned with pyright: never type-check the scratchpad
+include = ["."]
+exclude = [".venv", "**/__pycache__", "clipboard.py"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

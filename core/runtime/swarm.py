@@ -35,8 +35,6 @@ class Swarm:
                 await agent.fail()  # run failed: increment attempts; pending or failed
             else:
                 await agent.complete()  # run succeeded: claimed -> done
-            finally:
-                self._queue.task_done()
 
     async def aclose(self) -> None:
         for worker in self._workers:

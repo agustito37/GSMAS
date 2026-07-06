@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from core.graph.models import NodeBase
+from core.graph.models import Claimable, NodeBase
 from core.graph.store import GraphStore
 from core.providers.base import LLMProvider
 
@@ -70,9 +70,11 @@ class Agent:
         await self._execute(self)  # delegate to the reaction's logic
 
     async def complete(self) -> None:
-        await self.role.store.complete(self.work.id)  # claimed -> done
+        if isinstance(self.work, Claimable):
+            await self.role.store.complete(self.work.id)  # claimed -> done
 
     async def fail(self) -> None:
-        # framework guard FIRST (increment + pending-or-failed), then optional role hook
-        await self.role.store.fail(self.work.id, MAX_ATTEMPTS)
+        # framework guard FIRST (increment + pending-or-failed), then the role hook
+        if isinstance(self.work, Claimable):
+            await self.role.store.fail(self.work.id, MAX_ATTEMPTS)
         await self.role.on_failure(self.work)

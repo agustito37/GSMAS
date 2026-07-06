@@ -20,8 +20,18 @@ import pytest_asyncio
 from neo4j import AsyncGraphDatabase
 
 from core.agents.base import Agent, DeterministicRole, Reaction
-from core.graph.models import InputSignal, NodeBase, Verdict
+from core.graph.models import Case, InputSignal, NodeBase, Verdict
+from core.graph.store import EdgeSpec
 from core.runtime.orchestrator import Orchestrator
+
+
+async def _open_case(store) -> Case:
+    """A legal case root: InputSignal (born bare) + Case born connected via OPENS."""
+    signal = InputSignal(raw_content="a signal")
+    await store.create_node(signal, "InputSignal")
+    case = Case(objective="an objective", case_id="")
+    await store.create_node(case, "Case", edges=[EdgeSpec("OPENS", signal.id)])
+    return case
 
 
 class _DummyRole(DeterministicRole):
@@ -85,20 +95,22 @@ async def test_wait_for_closure_returns_if_verdict_already_exists(orchestrator):
     """The race fix: if the Verdict already exists when wait_for_closure is called (it
     could have appeared before subscribing), the check-then-wait finds it and returns
     at once instead of hanging."""
-    verdict = Verdict(case_id="case-1", kind="confirmed", content="done")
-    await orchestrator.store.create_node(verdict, "Verdict")
+    case = await _open_case(orchestrator.store)
+    verdict = Verdict(case_id=case.id, kind="confirmed", content="done")
+    await orchestrator.store.create_node(verdict, "Verdict", edges=[EdgeSpec("CONCLUDES", case.id)])
 
     # must return promptly; without check-then-wait this would hang (event already passed)
-    await asyncio.wait_for(orchestrator.wait_for_closure("case-1"), timeout=5)
+    await asyncio.wait_for(orchestrator.wait_for_closure(case.id), timeout=5)
 
 
 @pytest.mark.integration
 async def test_wait_for_closure_completes_when_verdict_appears_after(orchestrator):
     """If the Verdict appears after wait_for_closure is called, the subscription (or
     the check) catches it and the wait completes instead of hanging."""
-    waiter = asyncio.create_task(orchestrator.wait_for_closure("case-2"))
+    case = await _open_case(orchestrator.store)
+    waiter = asyncio.create_task(orchestrator.wait_for_closure(case.id))
 
-    verdict = Verdict(case_id="case-2", kind="refuted", content="done")
-    await orchestrator.store.create_node(verdict, "Verdict")
+    verdict = Verdict(case_id=case.id, kind="refuted", content="done")
+    await orchestrator.store.create_node(verdict, "Verdict", edges=[EdgeSpec("CONCLUDES", case.id)])
 
     await asyncio.wait_for(waiter, timeout=5)  # must complete

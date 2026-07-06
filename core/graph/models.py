@@ -34,8 +34,9 @@ class CaseNode(NodeBase):
     case_id: str
 
 
-class Case(CaseNode):
+class Case(CaseNode, Claimable):
     objective: str
+    rationale: str = ""  # why the Theorist framed the case this way
     context: str | None = None
     status: Literal["active", "closed", "archived"] = "active"
     closed_at: datetime | None = None
@@ -48,29 +49,41 @@ class Case(CaseNode):
         return self
 
 
-class Hypothesis(CaseNode):
+class Hypothesis(CaseNode, Claimable):
     description: str
+    rationale: str = ""  # why plausible (or why the evidence suggests it)
     status: Literal["active", "refuted", "confirmed"] = "active"
+    root_id: str = ""  # initial hypothesis of its branch; max 4 per branch (part 4)
+    refutation_reason: str | None = None  # the judgment that refuted it (if refuted)
+
+    @model_validator(mode="after")
+    def _own_root(self):
+        # an initial hypothesis is its own root; generated ones inherit the parent's
+        if not self.root_id:
+            self.root_id = self.id
+        return self
 
 
 class Investigation(CaseNode, Claimable):
     description: str
+    rationale: str = ""  # why this step tests the hypothesis
     status: Literal["blocked", "skipped", "validated", "rejected"] | None = None
     assigned_role_id: str | None = None
-    executor_agent_id: str | None = None  # overlaps claimed_by_agent_id; unify with
-    #   the Agent node lifecycle (the claimer IS the executor).
     condition: str | None = None
     skip_reason: str | None = None
 
 
 class Evidence(CaseNode):
     content: str
+    rationale: str = ""  # why the agent concluded this finding
+    triaged: bool = False  # True once the Theorist judged it (generate/refute/nothing);
     artifact_refs: list[str] = []
 
 
 class Verdict(CaseNode):
     kind: Literal["confirmed", "refuted", "inconclusive"]
     content: str
+    rationale: str = ""  # how the evidence was weighed to reach this kind
     feedback: Literal["correct", "incorrect", "partial"] | None = None
 
 
@@ -81,9 +94,6 @@ class Role(NodeBase):
     name: str
     kind: Literal["domain", "system"]
     agent_type: Literal["llm", "deterministic"]
-    knowledge_tools: list[str] = []
-    operational_tools: list[str] = []
-    prompt_template: str | None = None
 
 
 class LTM(NodeBase):
@@ -94,6 +104,7 @@ class Skill(NodeBase):
     role_id: str
     summary: str  # for indexing retrieval
     content: str
+    rationale: str = ""  # why the retrospective created/changed this skill
 
 
 class Agent(NodeBase):

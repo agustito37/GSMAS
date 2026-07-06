@@ -42,3 +42,21 @@ async def store(neo4j_container):
     graph_store = GraphStore(uri, *auth)
     yield graph_store
     await graph_store.close()
+
+
+@pytest_asyncio.fixture
+async def raw(neo4j_container):
+    """Run raw Cypher against the test Neo4j. For building INVALID states on purpose
+    (orphans, unlinked verdicts): the store forbids them by construction ("born
+    connected"), but the invariant checkers must still detect them if they appear by
+    another path (manual edits, bugs, writers that bypass the store)."""
+    uri = neo4j_container.get_connection_url()
+    auth = (neo4j_container.username, neo4j_container.password)
+    driver = AsyncGraphDatabase.driver(uri, auth=auth)
+
+    async def run(query, **params):
+        async with driver.session() as session:
+            await session.run(query, **params)
+
+    yield run
+    await driver.close()

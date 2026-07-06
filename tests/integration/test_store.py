@@ -1,70 +1,152 @@
 """Integration test for the GraphStore (Neo4j docker instance).
 
-Runs a node + edge + typed traversal round-trip. Run with:
+Runs node + edge + typed traversal round-trips under the "born connected" rule:
+case-scoped nodes are created WITH their birth edges, atomically. Run with:
     uv run pytest -m integration
 """
 
 import pytest
 
 from core.graph.models import Case, Evidence, Hypothesis, InputSignal, Investigation
+from core.graph.store import EdgeSpec
+
+
+async def _open_case(store) -> Case:
+    """The minimal legal root: an InputSignal (born bare, exempt) and a Case born
+    connected to it via OPENS."""
+    signal = InputSignal(raw_content="an input signal")
+    await store.create_node(signal, "InputSignal")
+    case = Case(objective="demo objective", case_id="")
+    await store.create_node(case, "Case", edges=[EdgeSpec("OPENS", signal.id)])
+    return case
+
+
+async def _derive_hypothesis(store, case: Case) -> Hypothesis:
+    hypothesis = Hypothesis(description="a candidate explanation", case_id=case.id)
+    await store.create_node(hypothesis, "Hypothesis", edges=[EdgeSpec("DERIVES", case.id)])
+    return hypothesis
+
+
+async def _plan_investigation(store, hypothesis: Hypothesis) -> Investigation:
+    investigation = Investigation(description="an investigation", case_id=hypothesis.case_id)
+    await store.create_node(
+        investigation, "Investigation", edges=[EdgeSpec("TESTS", hypothesis.id)]
+    )
+    return investigation
+
+
+# ---------- atomic birth (create_node) ----------
 
 
 @pytest.mark.integration
-async def test_get_create_node(store):
-    """Creating a node returns its ID and can be retrieved by ID."""
+async def test_create_node_born_connected(store):
+    """A case-scoped node is created WITH its birth edge in one operation: the node
+    is retrievable and the edge already exists."""
+    signal = InputSignal(raw_content="an input signal")
+    await store.create_node(signal, "InputSignal")
+
     case = Case(objective="demo objective", case_id="")
-    node_id = await store.create_node(case, label="Case")
-    assert node_id is not None
-    node = await store.get_node(node_id)
-    assert node is not None
+    node_id = await store.create_node(case, "Case", edges=[EdgeSpec("OPENS", signal.id)])
+
+    assert node_id == case.id
+    assert await store.get_node(node_id) is not None
+    opened = await store.get_neighbors(signal.id, "OPENS", direction="out", target_label="Case")
+    assert [n.id for n in opened] == [case.id]
+
+
+@pytest.mark.integration
+async def test_create_node_case_scoped_without_edges_raises(store):
+    """The framework restriction: a case-scoped node cannot be born an orphan (the
+    no-orphans invariant holds by construction)."""
+    with pytest.raises(ValueError, match="born connected"):
+        await store.create_node(Case(objective="demo objective", case_id=""), "Case")
+
+    assert await store.query_nodes("Case", {}) == []
+
+
+@pytest.mark.integration
+async def test_create_node_with_missing_endpoint_raises_and_creates_nothing(store):
+    """Atomicity: if a birth-edge endpoint does not exist, NOTHING is created (the
+    statement matches endpoints before creating)."""
+    case = await _open_case(store)
+    hypothesis = Hypothesis(description="a candidate explanation", case_id=case.id)
+
+    with pytest.raises(ValueError, match="endpoint"):
+        await store.create_node(
+            hypothesis, "Hypothesis", edges=[EdgeSpec("DERIVES", "unknown-id")]
+        )
+
+    assert await store.query_nodes("Hypothesis", {}) == []
+
+
+@pytest.mark.integration
+async def test_create_node_with_multiple_birth_edges(store):
+    """A node can be born with several edges at once, mixing directions: Evidence
+    born produced by its Investigation (in) and supporting a Hypothesis (out)."""
+    case = await _open_case(store)
+    hypothesis = await _derive_hypothesis(store, case)
+    investigation = await _plan_investigation(store, hypothesis)
+
+    evidence = Evidence(content="a supporting evidence", case_id=case.id)
+    await store.create_node(
+        evidence,
+        "Evidence",
+        edges=[
+            EdgeSpec("PRODUCES", investigation.id),  # in: investigation -> evidence
+            EdgeSpec("SUPPORTS", hypothesis.id, direction="out"),  # out: evidence -> hypothesis
+        ],
+    )
+
+    produced = await store.get_evidence_of_investigation(investigation.id)
+    supporting = await store.get_supporting_evidence(hypothesis.id)
+    assert [e.id for e in produced] == [evidence.id]
+    assert [e.id for e in supporting] == [evidence.id]
 
 
 @pytest.mark.integration
 async def test_get_node_fails_with_unknown_node_id(store):
     """Getting a node with an unknown ID returns None."""
-    node = await store.get_node("unknown")
-    assert node is None
+    assert await store.get_node("unknown") is None
 
 
 @pytest.mark.integration
 async def test_update_node(store):
     """Updating a node changes its properties."""
-    case = Case(objective="demo objective", case_id="")
-    node_id = await store.create_node(case, label="Case")
-    assert node_id is not None
-    await store.update_node(node_id, {"objective": "updated objective"})
-    node = await store.get_node(node_id)
+    case = await _open_case(store)
+    await store.update_node(case.id, {"objective": "updated objective"})
+    node = await store.get_node(case.id)
     assert node is not None
     assert node.objective == "updated objective"
 
 
 @pytest.mark.integration
-async def test_create_edge_is_directional(store):
-    """create_edge creates a *directed* edge: it is observable following the edge
-    outward from the source, but not from the target. Edges are connections, not
-    entities, so the store has no get_edge — they are observed via get_neighbors."""
-    case = Case(objective="demo objective", case_id="")
-    hypothesis = Hypothesis(description="a candidate explanation", case_id=case.id)
-    await store.create_node(case, label="Case")
-    await store.create_node(hypothesis, label="Hypothesis")
-    await store.create_edge(case.id, hypothesis.id, "DERIVES")
+async def test_create_edge_links_existing_nodes_directionally(store):
+    """create_edge is for linking two EXISTING nodes (e.g. a second InputSignal
+    opening an existing Case). The edge is *directed*: observable from the source,
+    not from the target."""
+    case = await _open_case(store)
+    second_signal = InputSignal(raw_content="another signal for the same case")
+    await store.create_node(second_signal, "InputSignal")
+
+    await store.create_edge(second_signal.id, case.id, "OPENS")
 
     forward = await store.get_neighbors(
-        case.id, "DERIVES", direction="out", target_label="Hypothesis"
+        second_signal.id, "OPENS", direction="out", target_label="Case"
     )
     backward = await store.get_neighbors(
-        hypothesis.id, "DERIVES", direction="out", target_label="Case"
+        case.id, "OPENS", direction="out", target_label="InputSignal"
     )
-
-    assert [n.id for n in forward] == [hypothesis.id]
+    assert [n.id for n in forward] == [case.id]
     assert backward == []
+
+
+# ---------- generic queries ----------
 
 
 @pytest.mark.integration
 async def test_query_nodes(store):
     """Querying nodes by properties returns the matching nodes."""
-    case = Case(objective="demo objective", case_id="")
-    await store.create_node(case, label="Case")
+    case = await _open_case(store)
     nodes = await store.query_nodes(label="Case", filters={"objective": "demo objective"})
     assert len(nodes) == 1
     assert nodes[0].id == case.id
@@ -74,27 +156,21 @@ async def test_query_nodes(store):
 @pytest.mark.integration
 async def test_query_nodes_fails_with_unknown_label(store):
     """Querying nodes by an unknown label returns an empty list."""
-    nodes = await store.query_nodes(label="Unknown", filters={})
-    assert len(nodes) == 0
+    assert await store.query_nodes(label="Unknown", filters={}) == []
 
 
 @pytest.mark.integration
 async def test_query_nodes_fails_with_unknown_property(store):
     """Querying nodes by an unknown property returns an empty list."""
-    case = Case(objective="demo objective", case_id="")
-    await store.create_node(case, label="Case")
-    nodes = await store.query_nodes(label="Case", filters={"unknown": "demo objective"})
-    assert len(nodes) == 0
+    await _open_case(store)
+    assert await store.query_nodes(label="Case", filters={"unknown": "demo objective"}) == []
 
 
 @pytest.mark.integration
 async def test_get_neighbors(store):
     """Getting neighbors of a node returns the connected nodes."""
-    case = Case(objective="demo objective", case_id="")
-    hypothesis = Hypothesis(description="a candidate explanation", case_id=case.id)
-    await store.create_node(case, label="Case")
-    await store.create_node(hypothesis, label="Hypothesis")
-    await store.create_edge(case.id, hypothesis.id, "DERIVES")
+    case = await _open_case(store)
+    hypothesis = await _derive_hypothesis(store, case)
     neighbors = await store.get_neighbors(
         case.id, "DERIVES", direction="out", target_label="Hypothesis"
     )
@@ -106,36 +182,36 @@ async def test_get_neighbors(store):
 @pytest.mark.integration
 async def test_get_neighbors_fails_with_unknown_edge_type(store):
     """Getting neighbors of a node with an unknown edge type returns an empty list."""
-    case = Case(objective="demo objective", case_id="")
-    await store.create_node(case, label="Case")
+    case = await _open_case(store)
     neighbors = await store.get_neighbors(
         case.id, "Unknown", direction="out", target_label="Hypothesis"
     )
-    assert len(neighbors) == 0
+    assert neighbors == []
 
 
 @pytest.mark.integration
 async def test_get_neighbors_fails_with_unknown_target_label(store):
     """Getting neighbors of a node with an unknown target label returns an empty list."""
-    case = Case(objective="demo objective", case_id="")
-    await store.create_node(case, label="Case")
+    case = await _open_case(store)
     neighbors = await store.get_neighbors(
         case.id, "DERIVES", direction="out", target_label="Unknown"
     )
-    assert len(neighbors) == 0
+    assert neighbors == []
+
+
+# ---------- layer 2: domain queries ----------
 
 
 @pytest.mark.integration
 async def test_get_refuting_evidence(store):
     """Refuting evidence is the Evidence that CONTRADICTS the hypothesis."""
-    case = Case(objective="demo objective", case_id="")
-    await store.create_node(case, label="Case")
-    hypothesis = Hypothesis(description="a candidate explanation", case_id=case.id)
-    await store.create_node(hypothesis, label="Hypothesis")
+    case = await _open_case(store)
+    hypothesis = await _derive_hypothesis(store, case)
     evidence = Evidence(content="a refuting evidence", case_id=case.id)
-    await store.create_node(evidence, label="Evidence")
-    # Per the ontology the edge goes Evidence -> Hypothesis.
-    await store.create_edge(evidence.id, hypothesis.id, "CONTRADICTS")
+    # per the ontology the edge goes Evidence -> Hypothesis (out from the new node)
+    await store.create_node(
+        evidence, "Evidence", edges=[EdgeSpec("CONTRADICTS", hypothesis.id, direction="out")]
+    )
 
     refuting = await store.get_refuting_evidence(hypothesis.id)
 
@@ -146,21 +222,18 @@ async def test_get_refuting_evidence(store):
 @pytest.mark.integration
 async def test_get_refuting_evidence_fails_with_unknown_hypothesis_id(store):
     """Getting refuting evidence for a hypothesis with an unknown ID returns an empty list."""
-    evidence = await store.get_refuting_evidence("unknown")
-    assert len(evidence) == 0
+    assert await store.get_refuting_evidence("unknown") == []
 
 
 @pytest.mark.integration
 async def test_get_supporting_evidence(store):
     """Supporting evidence is the Evidence that SUPPORTS the hypothesis."""
-    case = Case(objective="demo objective", case_id="")
-    await store.create_node(case, label="Case")
-    hypothesis = Hypothesis(description="a candidate explanation", case_id=case.id)
-    await store.create_node(hypothesis, label="Hypothesis")
+    case = await _open_case(store)
+    hypothesis = await _derive_hypothesis(store, case)
     evidence = Evidence(content="a supporting evidence", case_id=case.id)
-    await store.create_node(evidence, label="Evidence")
-    # Per the ontology the edge goes Evidence -> Hypothesis.
-    await store.create_edge(evidence.id, hypothesis.id, "SUPPORTS")
+    await store.create_node(
+        evidence, "Evidence", edges=[EdgeSpec("SUPPORTS", hypothesis.id, direction="out")]
+    )
 
     supporting = await store.get_supporting_evidence(hypothesis.id)
 
@@ -171,20 +244,15 @@ async def test_get_supporting_evidence(store):
 @pytest.mark.integration
 async def test_get_supporting_evidence_fails_with_unknown_hypothesis_id(store):
     """Getting supporting evidence for a hypothesis with an unknown ID returns an empty list."""
-    evidence = await store.get_supporting_evidence("unknown")
-    assert len(evidence) == 0
+    assert await store.get_supporting_evidence("unknown") == []
 
 
 @pytest.mark.integration
 async def test_get_investigations_of_hypothesis(store):
     """Getting investigations of a hypothesis returns the investigations."""
-    case = Case(objective="demo objective", case_id="")
-    await store.create_node(case, label="Case")
-    hypothesis = Hypothesis(description="a candidate explanation", case_id=case.id)
-    await store.create_node(hypothesis, label="Hypothesis")
-    investigation = Investigation(description="an investigation", case_id=case.id)
-    await store.create_node(investigation, label="Investigation")
-    await store.create_edge(hypothesis.id, investigation.id, "TESTS")
+    case = await _open_case(store)
+    hypothesis = await _derive_hypothesis(store, case)
+    investigation = await _plan_investigation(store, hypothesis)
     investigations = await store.get_investigations_of_hypothesis(hypothesis.id)
     assert len(investigations) == 1
     assert investigations[0].id == investigation.id
@@ -194,20 +262,17 @@ async def test_get_investigations_of_hypothesis(store):
 @pytest.mark.integration
 async def test_get_investigations_of_hypothesis_fails_with_unknown_hypothesis_id(store):
     """Getting investigations of a hypothesis with an unknown ID returns an empty list."""
-    investigations = await store.get_investigations_of_hypothesis("unknown")
-    assert len(investigations) == 0
+    assert await store.get_investigations_of_hypothesis("unknown") == []
 
 
 @pytest.mark.integration
 async def test_get_evidence_of_investigation(store):
     """Getting evidence of an investigation returns the evidence."""
-    case = Case(objective="demo objective", case_id="")
-    await store.create_node(case, label="Case")
-    investigation = Investigation(description="an investigation", case_id=case.id)
-    await store.create_node(investigation, label="Investigation")
+    case = await _open_case(store)
+    hypothesis = await _derive_hypothesis(store, case)
+    investigation = await _plan_investigation(store, hypothesis)
     evidence = Evidence(content="an evidence", case_id=case.id)
-    await store.create_node(evidence, label="Evidence")
-    await store.create_edge(investigation.id, evidence.id, "PRODUCES")
+    await store.create_node(evidence, "Evidence", edges=[EdgeSpec("PRODUCES", investigation.id)])
 
     produced = await store.get_evidence_of_investigation(investigation.id)
 
@@ -219,18 +284,15 @@ async def test_get_evidence_of_investigation(store):
 @pytest.mark.integration
 async def test_get_evidence_of_investigation_fails_with_unknown_investigation_id(store):
     """Getting evidence of an investigation with an unknown ID returns an empty list."""
-    evidence = await store.get_evidence_of_investigation("unknown")
-    assert len(evidence) == 0
+    assert await store.get_evidence_of_investigation("unknown") == []
 
 
 @pytest.mark.integration
 async def test_get_pending_investigations(store):
-    """Getting pending investigations for a case returns the investigations."""
-    case = Case(objective="demo objective", case_id="")
-    await store.create_node(case, label="Case")
-    investigation = Investigation(description="an investigation", case_id=case.id)
-    await store.create_node(investigation, label="Investigation")
-    await store.create_edge(case.id, investigation.id, "OPENS")
+    """Getting pending investigations for a case returns the not-yet-claimed ones."""
+    case = await _open_case(store)
+    hypothesis = await _derive_hypothesis(store, case)
+    investigation = await _plan_investigation(store, hypothesis)
     investigations = await store.get_pending_investigations(case.id)
     assert len(investigations) == 1
     assert investigations[0].id == investigation.id
@@ -240,8 +302,27 @@ async def test_get_pending_investigations(store):
 @pytest.mark.integration
 async def test_get_pending_investigations_fails_with_unknown_case_id(store):
     """Getting pending investigations for a case with an unknown ID returns an empty list."""
-    investigations = await store.get_pending_investigations("unknown")
-    assert len(investigations) == 0
+    assert await store.get_pending_investigations("unknown") == []
+
+
+@pytest.mark.integration
+async def test_get_active_hypotheses(store):
+    """Getting active hypotheses for a case returns the hypotheses."""
+    case = await _open_case(store)
+    hypothesis = await _derive_hypothesis(store, case)
+    hypotheses = await store.get_active_hypotheses(case.id)
+    assert len(hypotheses) == 1
+    assert hypotheses[0].id == hypothesis.id
+    assert hypotheses[0].description == "a candidate explanation"
+
+
+@pytest.mark.integration
+async def test_get_active_hypotheses_fails_with_unknown_case_id(store):
+    """Getting active hypotheses for a case with an unknown ID returns an empty list."""
+    assert await store.get_active_hypotheses("unknown") == []
+
+
+# ---------- claim lifecycle recovery ----------
 
 
 @pytest.mark.integration
@@ -291,48 +372,21 @@ async def test_recover_claimed_ignores_non_claimed(store):
     assert node.attempts == 0
 
 
-@pytest.mark.integration
-async def test_get_active_hypotheses(store):
-    """Getting active hypotheses for a case returns the hypotheses."""
-    case = Case(objective="demo objective", case_id="")
-    await store.create_node(case, label="Case")
-    hypothesis = Hypothesis(description="a candidate explanation", case_id=case.id)
-    await store.create_node(hypothesis, label="Hypothesis")
-    await store.create_edge(case.id, hypothesis.id, "DERIVES")
-    hypotheses = await store.get_active_hypotheses(case.id)
-    assert len(hypotheses) == 1
-    assert hypotheses[0].id == hypothesis.id
-    assert hypotheses[0].description == "a candidate explanation"
-
-
-@pytest.mark.integration
-async def test_get_active_hypotheses_fails_with_unknown_case_id(store):
-    """Getting active hypotheses for a case with an unknown ID returns an empty list."""
-    hypotheses = await store.get_active_hypotheses("unknown")
-    assert len(hypotheses) == 0
+# ---------- visualization ----------
 
 
 @pytest.mark.integration
 async def test_get_case_subgraph(store):
     """get_case_subgraph returns the Case, its InputSignals, and its case-scoped
     nodes. Neo4j does not guarantee collection order, so compare by id sets."""
-    case = Case(objective="demo objective", case_id="")
     signal = InputSignal(raw_content="an input signal")
-    hypothesis = Hypothesis(description="a candidate explanation", case_id=case.id)
-    investigation = Investigation(description="an investigation", case_id=case.id)
+    await store.create_node(signal, "InputSignal")
+    case = Case(objective="demo objective", case_id="")
+    await store.create_node(case, "Case", edges=[EdgeSpec("OPENS", signal.id)])
+    hypothesis = await _derive_hypothesis(store, case)
+    investigation = await _plan_investigation(store, hypothesis)
     evidence = Evidence(content="an evidence", case_id=case.id)
-    for node, label in [
-        (case, "Case"),
-        (signal, "InputSignal"),
-        (hypothesis, "Hypothesis"),
-        (investigation, "Investigation"),
-        (evidence, "Evidence"),
-    ]:
-        await store.create_node(node, label=label)
-    await store.create_edge(signal.id, case.id, "OPENS")
-    await store.create_edge(case.id, hypothesis.id, "DERIVES")
-    await store.create_edge(hypothesis.id, investigation.id, "TESTS")
-    await store.create_edge(investigation.id, evidence.id, "PRODUCES")
+    await store.create_node(evidence, "Evidence", edges=[EdgeSpec("PRODUCES", investigation.id)])
 
     subgraph = await store.get_case_subgraph(case.id)
 
@@ -350,5 +404,4 @@ async def test_get_case_subgraph(store):
 @pytest.mark.integration
 async def test_get_case_subgraph_with_unknown_case_id_returns_empty(store):
     """An unknown case_id yields an empty result rather than raising."""
-    subgraph = await store.get_case_subgraph("unknown")
-    assert subgraph == {}
+    assert await store.get_case_subgraph("unknown") == {}
