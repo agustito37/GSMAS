@@ -287,41 +287,6 @@ async def test_get_evidence_of_investigation_fails_with_unknown_investigation_id
     assert await store.get_evidence_of_investigation("unknown") == []
 
 
-@pytest.mark.integration
-async def test_get_pending_investigations(store):
-    """Getting pending investigations for a case returns the not-yet-claimed ones."""
-    case = await _open_case(store)
-    hypothesis = await _derive_hypothesis(store, case)
-    investigation = await _plan_investigation(store, hypothesis)
-    investigations = await store.get_pending_investigations(case.id)
-    assert len(investigations) == 1
-    assert investigations[0].id == investigation.id
-    assert investigations[0].description == "an investigation"
-
-
-@pytest.mark.integration
-async def test_get_pending_investigations_fails_with_unknown_case_id(store):
-    """Getting pending investigations for a case with an unknown ID returns an empty list."""
-    assert await store.get_pending_investigations("unknown") == []
-
-
-@pytest.mark.integration
-async def test_get_active_hypotheses(store):
-    """Getting active hypotheses for a case returns the hypotheses."""
-    case = await _open_case(store)
-    hypothesis = await _derive_hypothesis(store, case)
-    hypotheses = await store.get_active_hypotheses(case.id)
-    assert len(hypotheses) == 1
-    assert hypotheses[0].id == hypothesis.id
-    assert hypotheses[0].description == "a candidate explanation"
-
-
-@pytest.mark.integration
-async def test_get_active_hypotheses_fails_with_unknown_case_id(store):
-    """Getting active hypotheses for a case with an unknown ID returns an empty list."""
-    assert await store.get_active_hypotheses("unknown") == []
-
-
 # ---------- claim lifecycle recovery ----------
 
 
@@ -372,36 +337,3 @@ async def test_recover_claimed_ignores_non_claimed(store):
     assert node.attempts == 0
 
 
-# ---------- visualization ----------
-
-
-@pytest.mark.integration
-async def test_get_case_subgraph(store):
-    """get_case_subgraph returns the Case, its InputSignals, and its case-scoped
-    nodes. Neo4j does not guarantee collection order, so compare by id sets."""
-    signal = InputSignal(raw_content="an input signal")
-    await store.create_node(signal, "InputSignal")
-    case = Case(objective="demo objective", case_id="")
-    await store.create_node(case, "Case", edges=[EdgeSpec("OPENS", signal.id)])
-    hypothesis = await _derive_hypothesis(store, case)
-    investigation = await _plan_investigation(store, hypothesis)
-    evidence = Evidence(content="an evidence", case_id=case.id)
-    await store.create_node(evidence, "Evidence", edges=[EdgeSpec("PRODUCES", investigation.id)])
-
-    subgraph = await store.get_case_subgraph(case.id)
-
-    assert subgraph["case"]["id"] == case.id
-    assert {s["id"] for s in subgraph["signals"]} == {signal.id}
-    # InputSignal carries no case_id, so it is in "signals", not "nodes".
-    assert {n["id"] for n in subgraph["nodes"]} == {
-        case.id,
-        hypothesis.id,
-        investigation.id,
-        evidence.id,
-    }
-
-
-@pytest.mark.integration
-async def test_get_case_subgraph_with_unknown_case_id_returns_empty(store):
-    """An unknown case_id yields an empty result rather than raising."""
-    assert await store.get_case_subgraph("unknown") == {}

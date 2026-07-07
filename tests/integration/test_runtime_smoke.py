@@ -19,7 +19,7 @@ import pytest
 import pytest_asyncio
 from neo4j import AsyncGraphDatabase
 
-from core.agents.base import Agent, DeterministicRole, Reaction
+from core.agents.base import Agent, Reaction, Role
 from core.graph.models import Case, InputSignal, NodeBase, Verdict
 from core.graph.store import EdgeSpec
 from core.runtime.orchestrator import Orchestrator
@@ -34,7 +34,7 @@ async def _open_case(store) -> Case:
     return case
 
 
-class _DummyRole(DeterministicRole):
+class _DummyRole(Role):
     """Minimal role for the smoke test: one reaction that reacts to InputSignal
     creation, claims each signal via the store's atomic claim, and on execute records
     what it received and signals completion. No LLM, no domain logic."""

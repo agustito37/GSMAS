@@ -7,7 +7,6 @@ from core.graph.models import InputSignal
 from core.graph.store import GraphStore
 from core.runtime.swarm import Swarm
 
-
 logger = logging.getLogger("haive.orchestrator")
 
 class Orchestrator:

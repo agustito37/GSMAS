@@ -1,0 +1,18 @@
+{"ts": "2026-07-06T22:41:03Z", "source": "auth", "event": "login_success", "user": "jdoe", "ip": "84.120.11.7", "geo": "Madrid, Spain", "device": "LAPTOP-JDOE-01"}
+{"ts": "2026-07-07T01:12:44Z", "source": "auth", "event": "login_failure", "user": "asmith", "ip": "10.0.4.21", "geo": "internal", "reason": "wrong password"}
+{"ts": "2026-07-07T03:14:02Z", "source": "auth", "event": "login_success", "user": "jdoe", "ip": "203.0.113.9", "geo": "Minsk, Belarus", "device": "UNKNOWN-DEVICE", "note": "new device fingerprint, first login from this ASN"}
+{"ts": "2026-07-07T03:14:51Z", "source": "helpdesk", "event": "ticket_created", "ticket": "HD-88231", "summary": "caller requesting password reset for jdoe, identity verified with employee id and date of birth over phone"}
+{"ts": "2026-07-07T03:16:09Z", "source": "auth", "event": "password_changed", "user": "jdoe", "changed_by": "helpdesk_operator_7", "ticket": "HD-88231"}
+{"ts": "2026-07-07T03:16:40Z", "source": "auth", "event": "mfa_device_enrolled", "user": "jdoe", "device": "android-vd-9912", "ip": "203.0.113.9"}
+{"ts": "2026-07-07T03:18:22Z", "source": "vpn", "event": "session_start", "user": "jdoe", "ip": "203.0.113.9", "assigned_internal_ip": "10.0.9.77"}
+{"ts": "2026-07-07T03:25:10Z", "source": "file_access", "event": "share_mounted", "user": "jdoe", "host": "FS-03", "share": "finance-q3", "note": "first time this user mounts a finance share"}
+{"ts": "2026-07-07T03:29:47Z", "source": "network", "event": "outbound_transfer", "src": "10.0.9.77", "dst": "185.220.101.4", "bytes": 2470000000, "protocol": "https", "note": "2.3 GB to uncategorized external IP"}
+{"ts": "2026-07-07T03:31:02Z", "source": "edr", "event": "process_start", "host": "FS-03", "process": "7zip.exe", "args": "a -pXXXXX archive.7z D:\\finance-q3", "parent": "explorer.exe"}
+{"ts": "2026-07-07T08:02:15Z", "source": "auth", "event": "login_success", "user": "mrivera", "ip": "84.120.11.30", "geo": "Madrid, Spain", "device": "LAPTOP-MRIVERA"}
+{"ts": "2026-07-07T08:05:00Z", "source": "hr", "event": "travel_record_lookup", "user": "jdoe", "result": "no travel authorization on file, employee scheduled in Madrid office this week"}
+{"ts": "2026-07-07T08:31:12Z", "source": "email_gateway", "event": "message_delivered", "recipients": 15, "subject": "Q3 invoice - urgent", "attachment": "Q3_invoice.docm", "sender_domain": "cf0-corp.com", "note": "sender domain registered 5 days ago, display name impersonates CFO"}
+{"ts": "2026-07-07T08:33:40Z", "source": "edr", "event": "process_start", "host": "FIN-LAP-22", "process": "powershell.exe", "args": "-enc JAB3AGMAPQ...", "parent": "WINWORD.EXE", "note": "encoded command, downloads from uncategorized domain"}
+{"ts": "2026-07-07T08:34:01Z", "source": "network", "event": "dns_query", "host": "FIN-LAP-22", "domain": "cdn-update-check.net", "note": "domain registered 3 days ago, uncategorized"}
+{"ts": "2026-07-07T09:10:33Z", "source": "auth", "event": "login_success", "user": "asmith", "ip": "10.0.4.21", "geo": "internal", "device": "DESKTOP-ASMITH"}
+{"ts": "2026-07-07T09:45:20Z", "source": "phone_verification", "event": "callback_completed", "user": "jdoe", "result": "user answered from known number geolocated in Madrid, denies logging in, denies password change, denies MFA enrollment"}
+{"ts": "2026-07-07T10:02:11Z", "source": "file_access", "event": "file_read", "user": "mrivera", "host": "FS-01", "share": "marketing", "note": "routine access"}

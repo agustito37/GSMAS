@@ -1,11 +1,11 @@
 from typing import cast
 
-from core.agents.base import Agent, DeterministicRole, Reaction
+from core.agents.base import Agent, Reaction, Role
 from core.graph.models import Hypothesis, Investigation, NodeBase
 from core.graph.store import EdgeSpec
 
 
-class Planner(DeterministicRole):
+class Planner(Role):
     """Minimal InvestigationPlanner: for each Hypothesis, create one Investigation
     that tests it. Deterministic (no LLM) for the end-to-end skeleton; becomes an
     LLM role in Fase 4. Claims the Hypothesis (its primary consumer) so it is

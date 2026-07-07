@@ -3,7 +3,6 @@ import logging
 
 from core.agents.base import Agent
 
-
 logger = logging.getLogger("haive.swarm")
 
 class Swarm:

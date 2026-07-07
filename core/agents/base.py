@@ -4,12 +4,12 @@ from dataclasses import dataclass
 
 from core.graph.models import Claimable, NodeBase
 from core.graph.store import GraphStore
-from core.providers.base import LLMProvider
 
 MAX_ATTEMPTS = 3  # retries of one unit of work before it is marked 'failed' and dropped
 
 ClaimFn = Callable[[], Awaitable[NodeBase | None]]
 ExecuteFn = Callable[["Agent"], Awaitable[None]]
+
 
 @dataclass(frozen=True)
 class Reaction:
@@ -17,14 +17,21 @@ class Reaction:
     it then claims from the graph (claim), and how an agent runs that work (execute).
     Keeping the three together makes each line of work self-contained, so a role can
     have several independent ones without coupling them through a single dispatch."""
+
     triggers: set[tuple[str, str | None]]
     claim: ClaimFn
     execute: ExecuteFn
 
+
 class Role(ABC):
-    """A role. Register ONE instance. It declares its reactions and carries the
-    shared dependencies (store, provider) but NO per-work state, agents carry that,
-    so a single role instance is used by many concurrent agents safely."""
+    """A role: the ABSTRACT responsibility (its reactions) plus its shared
+    dependencies. The framework does NOT classify roles by how they reason: each
+    judgment (a reaction's execute) decides its own substrate - LLM, rules, or a
+    mix - and each concrete role declares whatever dependencies its judgments use
+    (store always; a provider and/or the tool catalog only if needed) in its own
+    __init__. Register ONE instance; it carries NO per-work state (agents do), so
+    many concurrent agents share it safely. The graph's Role.agent_type remains as
+    descriptive metadata; it is not a class hierarchy."""
 
     def __init__(self, store: GraphStore) -> None:
         self.store = store
@@ -42,17 +49,6 @@ class Role(ABC):
         already incremented attempts and moved the node to pending or failed). For
         custom cleanup/logging only; default no-op."""
 
-class LLMRole(Role):
-    """A role backed by an LLM (the domain roles + the LLM system roles). The model
-    is a parameter of the role, not of the architecture (provider-agnostic)."""
-
-    def __init__(self, store: GraphStore, provider: LLMProvider) -> None:
-        super().__init__(store)
-        self.provider = provider
-
-class DeterministicRole(Role):
-    """A role with no LLM: applies structural rules over the graph (e.g. recovery).
-    Inherits Role.__init__ unchanged."""
 
 class Agent:
     """Ephemeral execution unit. COMPOSES the registered role (a reference) plus the
@@ -61,7 +57,7 @@ class Agent:
     (bounded by MAX_ATTEMPTS)."""
 
     def __init__(self, role: Role, execute: ExecuteFn, work: NodeBase) -> None:
-        self.role = role  # composition: shared store/provider, and on_failure
+        self.role = role  # composition: shared deps and on_failure
         self.work = work  # the graph node this agent processes; the role knows its concrete type
         self.messages: list[dict] = []  # STM, isolated per agent
         self._execute = execute  # the reaction's execute, bound to this work

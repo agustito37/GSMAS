@@ -10,10 +10,12 @@ import config
 from core.events.bus import Event
 from core.providers.openai_provider import OpenAIProvider
 from core.runtime.orchestrator import Orchestrator
-from domain.roles.mock_specialist import MockSpecialist
+from core.tools.base import ToolRegistry
+from domain.roles.investigator import Investigator
 from domain.roles.planner import Planner
 from domain.roles.synthesizer import Synthesizer
 from domain.roles.theorist import Theorist
+from domain.tools.log_query import LogQueryTool
 
 logger = logging.getLogger("haive.dashboard")
 
@@ -62,9 +64,10 @@ async def lifespan(app: FastAPI):
     user, password = os.environ["NEO4J_AUTH"].split("/", 1)
     orchestrator = Orchestrator(NEO4J_URI, user, password)
     provider = OpenAIProvider(model=MODEL, api_key=config.OPENAI_API_KEY)
+    tools = ToolRegistry([LogQueryTool("data/telemetry.jsonl")])
+    orchestrator.register(Investigator(orchestrator.store, provider, tools))
     orchestrator.register(Theorist(orchestrator.store, provider))
     orchestrator.register(Planner(orchestrator.store))
-    orchestrator.register(MockSpecialist(orchestrator.store))
     orchestrator.register(Synthesizer(orchestrator.store))
     stream.wire(orchestrator)
     await orchestrator.start()

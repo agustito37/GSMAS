@@ -1,12 +1,12 @@
 from datetime import datetime
 from typing import cast
 
-from core.agents.base import Agent, DeterministicRole, Reaction
+from core.agents.base import Agent, Reaction, Role
 from core.graph.models import Case, NodeBase, Verdict
 from core.graph.store import EdgeSpec
 
 
-class Synthesizer(DeterministicRole):
+class Synthesizer(Role):
     """Closes the case. Wakes on new Evidence AND on Investigation updates (a skip,
     or a terminal fail - both can be the mutation that leaves the case quiescent);
     its claim decides whether the case is actually ready (every line terminal, no

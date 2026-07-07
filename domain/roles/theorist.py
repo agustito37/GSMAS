@@ -3,7 +3,7 @@ from typing import cast
 
 from pydantic import BaseModel
 
-from core.agents.base import Agent, LLMRole, Reaction
+from core.agents.base import Agent, Reaction, Role
 from core.graph.models import Case, Evidence, Hypothesis, InputSignal, NodeBase
 from core.graph.store import EdgeSpec
 
@@ -55,7 +55,7 @@ class _TriageOutput(BaseModel):
     refuted: list[_Refutation]
 
 
-class Theorist(LLMRole):
+class Theorist(Role):
     """Owner of the hypothesis space, with two reactions:
     (1) open: on a new InputSignal, open the Case and derive the initial hypotheses.
     (2) triage (the generative motor): on each new Evidence, judge whether the
@@ -66,10 +66,9 @@ class Theorist(LLMRole):
     Singleton while the scope is one case at a time."""
 
     def __init__(self, store, provider) -> None:
-        super().__init__(store, provider)
-        # transient in-flight dedup: two concurrent drains must not judge the same
-        # Evidence. In-memory on purpose - durable state (triaged) lives in the
-        # graph; a crash just re-judges on restart.
+        super().__init__(store)
+        self.provider = provider
+        # transient in-flight dedup (unchanged comment)
         self._triaging: set[str] = set()
         self._triage_attempts: dict[str, int] = {}
 

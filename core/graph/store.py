@@ -1,6 +1,5 @@
 import asyncio
 import logging
-
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, LiteralString, cast
@@ -198,42 +197,6 @@ class GraphStore:
                 investigation_id, "PRODUCES", direction="out", target_label="Evidence"
             ),
         )
-
-    async def get_pending_investigations(self, case_id: str) -> list[Investigation]:
-        return cast(
-            list[Investigation],
-            await self.query_nodes(
-                "Investigation", {"case_id": case_id, "claim_state": "pending"}
-            ),
-        )
-
-    async def get_active_hypotheses(self, case_id: str) -> list[Hypothesis]:
-        return cast(
-            list[Hypothesis],
-            await self.query_nodes("Hypothesis", {"case_id": case_id, "status": "active"}),
-        )
-
-    # ---------- visualization (returns plain dicts, not models) ----------
-
-    async def get_case_subgraph(self, case_id: str) -> dict:
-        query = """
-          MATCH (c:Case {id: $case_id})
-          OPTIONAL MATCH (s:InputSignal)-[:OPENS]->(c)
-          OPTIONAL MATCH (n {case_id: $case_id})
-          RETURN c AS case,
-            collect(DISTINCT s) AS signals,
-            collect(DISTINCT n) AS nodes
-        """
-        async with self._driver.session() as session:
-            result = await session.run(query, case_id=case_id)
-            record = await result.single()
-            if record is None or record["case"] is None:
-                return {}
-            return {
-                "case": dict(record["case"]),
-                "signals": [dict(s) for s in record["signals"]],
-                "nodes": [dict(n) for n in record["nodes"]],
-            }
 
     async def claim(self, label: str, filters: dict) -> NodeBase | None:
         """Find a `label` node with claim_state='pending' matching `filters`, mark it
