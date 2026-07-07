@@ -1,21 +1,33 @@
 import asyncio
 import logging
 
-from core.agents.base import MAX_ATTEMPTS, Agent, Reaction, Role
+from core.agents.base import MAX_ATTEMPTS, Agent
 from core.events.bus import Event, EventBus
 from core.graph.models import InputSignal
 from core.graph.store import GraphStore
+from core.providers.base import LLMProvider
+from core.roles.base import Reaction, Role
 from core.runtime.swarm import Swarm
+from core.tools.base import ToolRegistry
 
 logger = logging.getLogger("haive.orchestrator")
+
 
 class Orchestrator:
     """System runtime. Builds the generic pieces (bus, store, swarm), registers roles,
     and wires each reaction to the bus: claim that reaction's pending work and enqueue
-    it on the swarm. Entry point for input."""
+    it on the swarm. Entry point for input. Holds the COMMON tool catalog and the
+    role -> provider mapping: agents are stamped with their engine at spawn (this is
+    the single seam for a future model-selection policy: per work type, or escalating
+    on retry, without touching any role)."""
 
     def __init__(
-        self, neo4j_uri: str, neo4j_user: str, neo4j_password: str, max_agents: int = 8
+        self,
+        neo4j_uri: str,
+        neo4j_user: str,
+        neo4j_password: str,
+        max_agents: int = 8,
+        tools: ToolRegistry | None = None,
     ) -> None:
         self._bus = EventBus()
         self._store = GraphStore(
@@ -23,6 +35,8 @@ class Orchestrator:
         )
         self._swarm = Swarm(max_agents)
         self._roles: list[Role] = []
+        self._providers: dict[Role, LLMProvider | None] = {}
+        self._tools = tools
 
     def _on_mutation(
         self, event_type: str, node_id: str | None, node_type: str | None, payload: dict
@@ -40,11 +54,13 @@ class Orchestrator:
         return self._bus  # read-only observers (e.g. the dashboard) subscribe here
 
     # ---- registration / wiring ----
-    def register(self, role: Role) -> None:
+    def register(self, role: Role, provider: LLMProvider | None = None) -> None:
         """Register a role instance and wire each of its reactions to the bus. On a
         matching event, drain that reaction's pending work and enqueue an agent per
-        unit. Domain builds the concrete roles (store/provider) and registers them."""
+        unit. `provider` is the engine this role's agents get stamped with; roles
+        whose judgments are pure rules register without one."""
         self._roles.append(role)
+        self._providers[role] = provider
         for reaction in role.reactions():
             for event_type, node_type in reaction.triggers:
                 self._bus.subscribe(
@@ -54,11 +70,19 @@ class Orchestrator:
     def _handler_for(self, role: Role, reaction: Reaction):
         async def on_event(_event: Event) -> None:
             await self._drain(role, reaction)
+
         return on_event
 
     async def _drain(self, role: Role, reaction: Reaction) -> None:
         while (work := await reaction.claim()) is not None:
-            await self._swarm.submit(Agent(role, reaction.execute, work))
+            agent = Agent(
+                role,
+                reaction.execute,
+                work,
+                provider=self._providers.get(role),
+                tools=self._tools,
+            )
+            await self._swarm.submit(agent)
 
     async def start(self) -> None:
         """Spawn the worker pool, recover any 'claimed' orphans left by a previous

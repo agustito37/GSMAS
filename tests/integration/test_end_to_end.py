@@ -1,7 +1,8 @@
 """End-to-end minimal flow: InputSignal -> Case -> Hypotheses -> Investigations ->
-Evidence -> Verdict, driving the four REAL roles (Theorist and Investigator on
-MockProviders, Planner and Synthesizer deterministic) over the runtime + Neo4j.
-No stub roles: the Investigator is the real one, with an empty tool catalog.
+Evidence -> Verdict, driving the four REAL roles (the Theorist's and Investigator's
+agents on MockProviders, Planner and Synthesizer deterministic) over the runtime +
+Neo4j. Roles register engine-free; each one's provider is given at registration and
+stamped on its agents at spawn.
 
     uv run pytest -m integration
 """
@@ -15,7 +16,6 @@ from neo4j import AsyncGraphDatabase
 
 from core.providers.base import LLMResponse
 from core.runtime.orchestrator import Orchestrator
-from core.tools.base import ToolRegistry
 from domain.roles.investigator import Investigator
 from domain.roles.planner import Planner
 from domain.roles.synthesizer import Synthesizer
@@ -36,12 +36,12 @@ _THEORIST_OUTPUT = json.dumps(
 # the generative motor triages every Evidence: one call per evidence, judging nothing
 _TRIAGE_NOTHING = json.dumps({"new_hypotheses": [], "refuted": []})
 
-# the Investigator has no tools here: an honest empty-handed finding, once per
-# Investigation (2 hypotheses -> 2 investigations)
+# the Investigator runs with no tool catalog here: an honest empty-handed finding,
+# once per Investigation (2 hypotheses -> 2 investigations)
 _NEUTRAL_FINDING = json.dumps(
     {
         "content": "no telemetry available for this step",
-        "rationale": "the tool catalog is empty; nothing to examine",
+        "rationale": "no tools were available; nothing to examine",
         "stance": "neutral",
     }
 )
@@ -77,29 +77,24 @@ async def test_input_signal_reaches_a_verdict(orchestrator):
     store = orchestrator.store
     # 3 responses: 1 opens the case, then one triage per evidence (2)
     orchestrator.register(
-        Theorist(
-            store,
-            MockProvider(
-                [
-                    LLMResponse(content=_THEORIST_OUTPUT),
-                    LLMResponse(content=_TRIAGE_NOTHING),
-                    LLMResponse(content=_TRIAGE_NOTHING),
-                ]
-            ),
-        )
+        Theorist(store),
+        provider=MockProvider(
+            [
+                LLMResponse(content=_THEORIST_OUTPUT),
+                LLMResponse(content=_TRIAGE_NOTHING),
+                LLMResponse(content=_TRIAGE_NOTHING),
+            ]
+        ),
     )
     orchestrator.register(Planner(store))
     orchestrator.register(
-        Investigator(
-            store,
-            MockProvider(
-                [
-                    LLMResponse(content=_NEUTRAL_FINDING),
-                    LLMResponse(content=_NEUTRAL_FINDING),
-                ]
-            ),
-            ToolRegistry([]),
-        )
+        Investigator(store),
+        provider=MockProvider(
+            [
+                LLMResponse(content=_NEUTRAL_FINDING),
+                LLMResponse(content=_NEUTRAL_FINDING),
+            ]
+        ),
     )
     orchestrator.register(Synthesizer(store))
 

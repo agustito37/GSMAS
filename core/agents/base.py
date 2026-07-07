@@ -1,69 +1,71 @@
-from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from typing import TypeVar
 
+from pydantic import BaseModel
+
+from core.agents.tool_loop import run_tool_loop
 from core.graph.models import Claimable, NodeBase
-from core.graph.store import GraphStore
+from core.providers.base import LLMProvider
+from core.roles.base import ExecuteFn, Executor, Role
+from core.tools.base import ToolRegistry
 
 MAX_ATTEMPTS = 3  # retries of one unit of work before it is marked 'failed' and dropped
 
-ClaimFn = Callable[[], Awaitable[NodeBase | None]]
-ExecuteFn = Callable[["Agent"], Awaitable[None]]
+T = TypeVar("T", bound=BaseModel)
 
 
-@dataclass(frozen=True)
-class Reaction:
-    """One reactive behavior of a role: which events wake it (triggers), what work
-    it then claims from the graph (claim), and how an agent runs that work (execute).
-    Keeping the three together makes each line of work self-contained, so a role can
-    have several independent ones without coupling them through a single dispatch."""
-
-    triggers: set[tuple[str, str | None]]
-    claim: ClaimFn
-    execute: ExecuteFn
-
-
-class Role(ABC):
-    """A role: the ABSTRACT responsibility (its reactions) plus its shared
-    dependencies. The framework does NOT classify roles by how they reason: each
-    judgment (a reaction's execute) decides its own substrate - LLM, rules, or a
-    mix - and each concrete role declares whatever dependencies its judgments use
-    (store always; a provider and/or the tool catalog only if needed) in its own
-    __init__. Register ONE instance; it carries NO per-work state (agents do), so
-    many concurrent agents share it safely. The graph's Role.agent_type remains as
-    descriptive metadata; it is not a class hierarchy."""
-
-    def __init__(self, store: GraphStore) -> None:
-        self.store = store
-
-    @abstractmethod
-    def reactions(self) -> list[Reaction]:
-        """The role's reactive behaviors, one per independent line of work. Each
-        Reaction binds the events that wake it, the claim that pulls its pending unit
-        from the graph (atomic SET ... WHERE so a unit is never taken twice), and the
-        execute an agent runs on that unit. Mono-purpose roles return one Reaction."""
-
-    # on_failure is an optional hook with a default no-op; not @abstractmethod on purpose.
-    async def on_failure(self, work: NodeBase) -> None:  # noqa: B027
-        """Optional hook called AFTER the framework's retry guard ran (store.fail
-        already incremented attempts and moved the node to pending or failed). For
-        custom cleanup/logging only; default no-op."""
-
-
-class Agent:
+class Agent(Executor):
     """Ephemeral execution unit. COMPOSES the registered role (a reference) plus the
-    per-execution state: the work (a graph node), its own STM, and the reaction's
-    execute. Drives its claim lifecycle: complete() on success, fail() on error
-    (bounded by MAX_ATTEMPTS)."""
+    per-execution state: the work (a graph node), its own STM, the reaction's
+    execute, and the ENGINE backing this execution (provider + catalog access,
+    stamped by the runtime at spawn). IMPLEMENTS the roles layer's Executor
+    contract explicitly (classic dependency inversion: the declaration layer owns
+    the interface, the execution layer subscribes to it; the import direction stays
+    agents -> roles). Drives its claim lifecycle: complete() on success, fail() on
+    error (bounded by MAX_ATTEMPTS)."""
 
-    def __init__(self, role: Role, execute: ExecuteFn, work: NodeBase) -> None:
+    def __init__(
+        self,
+        role: Role,
+        execute: ExecuteFn,
+        work: NodeBase,
+        provider: LLMProvider | None = None,
+        tools: ToolRegistry | None = None,
+    ) -> None:
         self.role = role  # composition: shared deps and on_failure
         self.work = work  # the graph node this agent processes; the role knows its concrete type
         self.messages: list[dict] = []  # STM, isolated per agent
+        self.provider = provider  # the engine backing THIS execution, not the role's
+        self.tools = tools  # access to the common tool catalog
         self._execute = execute  # the reaction's execute, bound to this work
 
     async def run(self) -> None:
         await self._execute(self)  # delegate to the reaction's logic
+
+    async def run_llm(
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: type[T],
+        tools: ToolRegistry | None = None,
+    ) -> T:
+        """Run one LLM exchange on this agent's engine and return the answer parsed
+        into `schema`. The role supplies the judgment (system prompt, user context,
+        schema, and tools IF its judgment uses them); the agent supplies the engine
+        (its provider) and records the whole exchange in its own STM. Runs through
+        the tool loop even without tools (it degenerates to a single completion).
+        A malformed final answer raises (pydantic ValidationError): the worker fails
+        the agent and the retry budget takes over."""
+        if self.provider is None:
+            raise RuntimeError(
+                "agent has no provider: register the role with one (register(role, provider=...))"
+            )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        response = await run_tool_loop(self.provider, tools, self, messages, response_schema=schema)
+        return schema.model_validate_json(response.content)
 
     async def complete(self) -> None:
         if isinstance(self.work, Claimable):

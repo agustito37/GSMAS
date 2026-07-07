@@ -1,8 +1,8 @@
 from typing import cast
 
-from core.agents.base import Agent, Reaction, Role
 from core.graph.models import Hypothesis, Investigation, NodeBase
 from core.graph.store import EdgeSpec
+from core.roles.base import Executor, Reaction, Role
 
 
 class Planner(Role):
@@ -17,7 +17,7 @@ class Planner(Role):
     async def _claim_hypothesis(self) -> NodeBase | None:
         return await self.store.claim("Hypothesis", {})
 
-    async def _plan(self, agent: Agent) -> None:
+    async def _plan(self, agent: Executor) -> None:
         hypothesis = cast(Hypothesis, agent.work)
         if hypothesis.status == "refuted":
             return  # refuted before planning

@@ -3,9 +3,9 @@ from typing import cast
 
 from pydantic import BaseModel
 
-from core.agents.base import Agent, Reaction, Role
 from core.graph.models import Case, Evidence, Hypothesis, InputSignal, NodeBase
 from core.graph.store import EdgeSpec
+from core.roles.base import Executor, Reaction, Role
 
 logger = logging.getLogger("haive.theorist")
 
@@ -65,9 +65,8 @@ class Theorist(Role):
         re-wakes the Synthesizer, so closure cannot outrun generation.
     Singleton while the scope is one case at a time."""
 
-    def __init__(self, store, provider) -> None:
+    def __init__(self, store) -> None:
         super().__init__(store)
-        self.provider = provider
         # transient in-flight dedup (unchanged comment)
         self._triaging: set[str] = set()
         self._triage_attempts: dict[str, int] = {}
@@ -83,14 +82,11 @@ class Theorist(Role):
     async def _claim_signal(self) -> NodeBase | None:
         return await self.store.claim("InputSignal", {})
 
-    async def _open_case(self, agent: Agent) -> None:
+    async def _open_case(self, agent: Executor) -> None:
         signal = cast(InputSignal, agent.work)  # the claim only returns InputSignals
-        messages = [
-            {"role": "system", "content": _OPEN_PROMPT},
-            {"role": "user", "content": signal.raw_content},
-        ]
-        response = await self.provider.complete(messages, response_schema=_TheoristOutput)
-        out = _TheoristOutput.model_validate_json(response.content)
+        out = await agent.run_llm(
+            system=_OPEN_PROMPT, user=signal.raw_content, schema=_TheoristOutput
+        )
 
         case = Case(objective=out.objective, rationale=out.rationale, case_id="")
         await self.store.create_node(case, "Case", edges=[EdgeSpec("OPENS", signal.id)])
@@ -116,7 +112,7 @@ class Theorist(Role):
                 return evidence
         return None
 
-    async def _triage_evidence(self, agent: Agent) -> None:
+    async def _triage_evidence(self, agent: Executor) -> None:
         evidence = cast(Evidence, agent.work)
         hypotheses = cast(
             list[Hypothesis],
@@ -130,19 +126,15 @@ class Theorist(Role):
         listing = "\n".join(
             f"- id={h.id} status={h.status}: {h.description}" for h in hypotheses
         )
-        messages = [
-            {"role": "system", "content": _TRIAGE_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"Case objective: {objective}\n\nHypotheses:\n{listing}\n\n"
-                    f"New evidence (from hypothesis {parent.id if parent else 'unknown'}):\n"
-                    f"{evidence.content}\nWhy the analyst concluded it: {evidence.rationale}"
-                ),
-            },
-        ]
-        response = await self.provider.complete(messages, response_schema=_TriageOutput)
-        out = _TriageOutput.model_validate_json(response.content)
+        out = await agent.run_llm(
+            system=_TRIAGE_PROMPT,
+            user=(
+                f"Case objective: {objective}\n\nHypotheses:\n{listing}\n\n"
+                f"New evidence (from hypothesis {parent.id if parent else 'unknown'}):\n"
+                f"{evidence.content}\nWhy the analyst concluded it: {evidence.rationale}"
+            ),
+            schema=_TriageOutput,
+        )
         logger.info(
             "triage of evidence %s: %d new hypothesis(es), %d refutation(s)",
             evidence.id[:8],

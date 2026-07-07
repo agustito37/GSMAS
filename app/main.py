@@ -62,11 +62,15 @@ stream = EventStream()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     user, password = os.environ["NEO4J_AUTH"].split("/", 1)
-    orchestrator = Orchestrator(NEO4J_URI, user, password)
+    orchestrator = Orchestrator(
+        NEO4J_URI,
+        user,
+        password,
+        tools=ToolRegistry([LogQueryTool("data/telemetry.jsonl")]),
+    )
     provider = OpenAIProvider(model=MODEL, api_key=config.OPENAI_API_KEY)
-    tools = ToolRegistry([LogQueryTool("data/telemetry.jsonl")])
-    orchestrator.register(Investigator(orchestrator.store, provider, tools))
-    orchestrator.register(Theorist(orchestrator.store, provider))
+    orchestrator.register(Investigator(orchestrator.store), provider=provider)
+    orchestrator.register(Theorist(orchestrator.store), provider=provider)
     orchestrator.register(Planner(orchestrator.store))
     orchestrator.register(Synthesizer(orchestrator.store))
     stream.wire(orchestrator)

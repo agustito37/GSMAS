@@ -1,8 +1,13 @@
-import json
+from __future__ import annotations
 
-from core.agents.base import Agent
+import json
+from typing import TYPE_CHECKING
+
 from core.providers.base import LLMProvider, LLMResponse
 from core.tools.base import ToolRegistry
+
+if TYPE_CHECKING:
+    from core.agents.base import Agent
 
 MAX_TOOL_ITERATIONS = 8  # LLM turns per agent run; overflow raises -> fail/retry bounds the spend
 

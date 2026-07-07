@@ -2,10 +2,9 @@ from typing import Literal, cast
 
 from pydantic import BaseModel
 
-from core.agents.base import Agent, Reaction, Role
-from core.agents.tool_loop import run_tool_loop
 from core.graph.models import Case, Evidence, Hypothesis, Investigation, NodeBase
 from core.graph.store import EdgeSpec
+from core.roles.base import Executor, Reaction, Role
 
 _PROMPT = (
     "You execute ONE investigation step of an open case. Use the available tools to "
@@ -26,13 +25,9 @@ class _Finding(BaseModel):
 
 class Investigator(Role):
     """THE generic domain investigator. Claims any pending Investigation, works it
-    with the common tool catalog, and produces Evidence born with PRODUCES plus
-    SUPPORTS/CONTRADICTS according to its own judgment of the finding."""
-
-    def __init__(self, store, provider, tools) -> None:
-        super().__init__(store)
-        self.provider = provider
-        self.tools = tools
+    with the common tool catalog (carried by its agents), and produces Evidence born
+    with PRODUCES plus SUPPORTS/CONTRADICTS according to its own judgment of the
+    finding."""
 
     def reactions(self) -> list[Reaction]:
         trigger = ("node_created", "Investigation")
@@ -41,28 +36,23 @@ class Investigator(Role):
     async def _claim_investigation(self) -> NodeBase | None:
         return await self.store.claim("Investigation", {})
 
-    async def _investigate(self, agent: Agent) -> None:
+    async def _investigate(self, agent: Executor) -> None:
         investigation = cast(Investigation, agent.work)
         hypothesis = await self._hypothesis_under_test(investigation.id)
         cases = await self.store.query_nodes("Case", {"case_id": investigation.case_id})
         objective = cast(Case, cases[0]).objective if cases else ""
 
-        messages = [
-            {"role": "system", "content": _PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"Case objective: {objective}\n"
-                    f"Hypothesis under test: "
-                    f"{hypothesis.description if hypothesis else 'unknown'}\n"
-                    f"Your investigation step: {investigation.description}"
-                ),
-            },
-        ]
-        response = await run_tool_loop(
-            self.provider, self.tools, agent, messages, response_schema=_Finding
+        finding = await agent.run_llm(
+            system=_PROMPT,
+            user=(
+                f"Case objective: {objective}\n"
+                f"Hypothesis under test: "
+                f"{hypothesis.description if hypothesis else 'unknown'}\n"
+                f"Your investigation step: {investigation.description}"
+            ),
+            schema=_Finding,
+            tools=agent.tools,  # this judgment uses the common catalog
         )
-        finding = _Finding.model_validate_json(response.content)
 
         evidence = Evidence(
             content=finding.content,

@@ -19,9 +19,9 @@ import pytest
 import pytest_asyncio
 from neo4j import AsyncGraphDatabase
 
-from core.agents.base import Agent, Reaction, Role
 from core.graph.models import Case, InputSignal, NodeBase, Verdict
 from core.graph.store import EdgeSpec
+from core.roles.base import Executor, Reaction, Role
 from core.runtime.orchestrator import Orchestrator
 
 
@@ -52,7 +52,7 @@ class _DummyRole(Role):
         # the real claim: atomic, in the graph (pending -> claimed), survives restarts
         return await self.store.claim("InputSignal", {})
 
-    async def _handle_signal(self, agent: Agent) -> None:
+    async def _handle_signal(self, agent: Executor) -> None:
         signal = cast(InputSignal, agent.work)  # the claim only ever returns InputSignals
         self.seen_content = signal.raw_content  # proof the chain delivered the node
         self.done.set()  # wake the waiting test

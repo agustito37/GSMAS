@@ -38,11 +38,13 @@ async def _seed_case(store):
     return case, hypothesis, investigation, evidence
 
 
-async def _run_triage(theorist: Theorist) -> None:
-    """Simulate the orchestrator for reaction 2: claim the evidence, run an agent."""
+async def _run_triage(store, provider) -> None:
+    """Simulate the orchestrator for reaction 2: claim the evidence, spawn an agent
+    stamped with the engine, run it."""
+    theorist = Theorist(store)
     work = await theorist._claim_evidence()
     assert work is not None
-    await Agent(theorist, theorist.reactions()[1].execute, work).run()
+    await Agent(theorist, theorist.reactions()[1].execute, work, provider=provider).run()
 
 
 @pytest.mark.integration
@@ -58,15 +60,15 @@ async def test_theorist_opens_case_and_derives_hypotheses(store):
             {"description": "legitimate travel", "rationale": "user may be abroad"},
         ],
     }))])
-    theorist = Theorist(store, provider)
+    theorist = Theorist(store)
 
     signal = InputSignal(raw_content="suspicious login from a new country")
     await store.create_node(signal, "InputSignal")
 
-    # simulate the orchestrator: claim the work, then run an agent on it
+    # simulate the orchestrator: claim the work, then run an engine-stamped agent
     work = await theorist._claim_signal()
     assert work is not None
-    await Agent(theorist, theorist.reactions()[0].execute, work).run()
+    await Agent(theorist, theorist.reactions()[0].execute, work, provider=provider).run()
 
     cases = await store.query_nodes("Case", {})
     assert len(cases) == 1
@@ -102,7 +104,7 @@ async def test_triage_generates_a_suggested_hypothesis(store):
         "refuted": [],
     }))])
 
-    await _run_triage(Theorist(store, provider))
+    await _run_triage(store, provider)
 
     hyps = await store.query_nodes("Hypothesis", {"case_id": case.id})
     assert len(hyps) == 2
@@ -125,7 +127,7 @@ async def test_triage_generates_a_suggested_hypothesis(store):
 async def test_triage_refutes_and_skips_pending_work(store):
     """Evidence that conclusively contradicts a hypothesis: the Theorist marks it
     refuted (recording the judgment) and its not-yet-claimed investigations are
-    skipped, terminally (no specialist can claim them anymore)."""
+    skipped, terminally (no one can claim them anymore)."""
     case, hypothesis, _, evidence = await _seed_case(store)
     pending = Investigation(description="interview the user", case_id=case.id)
     await store.create_node(pending, "Investigation", edges=[EdgeSpec("TESTS", hypothesis.id)])
@@ -136,7 +138,7 @@ async def test_triage_refutes_and_skips_pending_work(store):
         ],
     }))])
 
-    await _run_triage(Theorist(store, provider))
+    await _run_triage(store, provider)
 
     refuted = await store.get_node(hypothesis.id)
     assert refuted is not None
@@ -166,7 +168,7 @@ async def test_triage_respects_the_branch_limit(store):
         "refuted": [],
     }))])
 
-    await _run_triage(Theorist(store, provider))
+    await _run_triage(store, provider)
 
     hyps = await store.query_nodes("Hypothesis", {"case_id": case.id})
     assert len(hyps) == 4  # the branch was full: nothing was created

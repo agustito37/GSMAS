@@ -34,10 +34,10 @@ async def _seed_investigation(store):
 
 @pytest.mark.integration
 async def test_investigator_searches_logs_and_produces_judged_evidence(store):
-    """The Investigator claims the Investigation, drives the tool loop (a log_query
-    call against the real telemetry file), and produces Evidence born with PRODUCES
-    plus the SUPPORTS/CONTRADICTS edge of its own judgment (stance), carrying the
-    finding and its rationale."""
+    """The Investigator claims the Investigation, its agent drives the tool loop (a
+    log_query call against the real telemetry file), and produces Evidence born with
+    PRODUCES plus the SUPPORTS/CONTRADICTS edge of its own judgment (stance),
+    carrying the finding and its rationale."""
     case, hypothesis, investigation = await _seed_investigation(store)
     provider = MockProvider([
         LLMResponse(content="", tool_calls=[
@@ -50,11 +50,13 @@ async def test_investigator_searches_logs_and_produces_judged_evidence(store):
         })),
     ])
     tools = ToolRegistry([LogQueryTool("data/telemetry.jsonl")])
-    investigator = Investigator(store, provider, tools)
+    investigator = Investigator(store)
 
     work = await investigator.reactions()[0].claim()
     assert work is not None and work.id == investigation.id
-    agent = Agent(investigator, investigator.reactions()[0].execute, work)
+    agent = Agent(
+        investigator, investigator.reactions()[0].execute, work, provider=provider, tools=tools
+    )
     await agent.run()
 
     # the tool result actually entered the STM (the loop ran against real telemetry)
@@ -85,11 +87,17 @@ async def test_investigator_neutral_finding_creates_no_stance_edge(store):
             "stance": "neutral",
         })),
     ])
-    investigator = Investigator(store, provider, ToolRegistry([]))
+    investigator = Investigator(store)
 
     work = await investigator.reactions()[0].claim()
     assert work is not None
-    agent = Agent(investigator, investigator.reactions()[0].execute, work)
+    agent = Agent(
+        investigator,
+        investigator.reactions()[0].execute,
+        work,
+        provider=provider,
+        tools=ToolRegistry([]),
+    )
     await agent.run()
 
     produced = await store.get_evidence_of_investigation(investigation.id)

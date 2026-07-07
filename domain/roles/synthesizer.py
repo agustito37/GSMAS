@@ -1,9 +1,9 @@
 from datetime import datetime
 from typing import cast
 
-from core.agents.base import Agent, Reaction, Role
 from core.graph.models import Case, NodeBase, Verdict
 from core.graph.store import EdgeSpec
+from core.roles.base import Executor, Reaction, Role
 
 
 class Synthesizer(Role):
@@ -32,7 +32,7 @@ class Synthesizer(Role):
     async def _claim_quiescent_case(self) -> NodeBase | None:
         return await self.store.claim_case_for_synthesis()
 
-    async def _synthesize(self, agent: Agent) -> None:
+    async def _synthesize(self, agent: Executor) -> None:
         case = cast(Case, agent.work)
         verdict = Verdict(
             kind="inconclusive",  # deterministic skeleton; an LLM would reason the kind
