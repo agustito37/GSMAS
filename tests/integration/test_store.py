@@ -8,7 +8,7 @@ case-scoped nodes are created WITH their birth edges, atomically. Run with:
 import pytest
 
 from core.graph.models import Case, Evidence, Hypothesis, InputSignal, Investigation
-from core.graph.store import EdgeSpec
+from core.graph.store import EdgeSpec, GraphStore
 
 
 async def _open_case(store) -> Case:
@@ -335,5 +335,65 @@ async def test_recover_claimed_ignores_non_claimed(store):
     assert node is not None
     assert node.claim_state == "pending"
     assert node.attempts == 0
+
+
+# ---------- cost measurement ----------
+
+
+@pytest.mark.integration
+async def test_record_cost_accumulates_and_does_not_emit(store, neo4j_container):
+    """record_cost adds up across calls (retries) and, crucially, emits NO event:
+    it is evaluation bookkeeping, not a domain mutation (an event would wake
+    reactions like the Synthesizer). Verified with a capturing store."""
+    events: list = []
+    uri = neo4j_container.get_connection_url()
+    auth = (neo4j_container.username, neo4j_container.password)
+    watched = GraphStore(uri, *auth, on_mutation=lambda *a: events.append(a))
+
+    signal = InputSignal(raw_content="a signal")
+    await watched.create_node(signal, "InputSignal")
+    events.clear()  # ignore the creation event; we only watch record_cost
+
+    await watched.record_cost(signal.id, 10, 4, 1, 12.5)
+    await watched.record_cost(signal.id, 7, 3, 1, 8.0)  # a retry adds up
+
+    assert events == []  # NO event emitted by record_cost
+    refreshed = await watched.get_node(signal.id)
+    assert isinstance(refreshed, InputSignal)  # narrows to the Measured-bearing type
+    assert refreshed.tokens_in == 17
+    assert refreshed.tokens_out == 7
+    assert refreshed.llm_calls == 2
+    assert refreshed.elapsed_ms == 20.5
+    await watched.close()
+
+
+@pytest.mark.integration
+async def test_get_case_cost_sums_the_whole_subgraph(store):
+    """get_case_cost sums cost over every case-scoped node plus the opening
+    InputSignal (one OPENS hop out), and counts the subgraph's nodes."""
+    signal = InputSignal(raw_content="a signal")
+    await store.create_node(signal, "InputSignal")
+    case = Case(objective="o", case_id="")
+    await store.create_node(case, "Case", edges=[EdgeSpec("OPENS", signal.id)])
+    hypothesis = Hypothesis(description="h", case_id=case.id)
+    await store.create_node(hypothesis, "Hypothesis", edges=[EdgeSpec("DERIVES", case.id)])
+
+    await store.record_cost(signal.id, 100, 40, 1, 0.0)  # the open-case episode
+    await store.record_cost(hypothesis.id, 50, 20, 2, 0.0)  # a planning episode
+
+    cost = await store.get_case_cost(case.id)
+
+    assert cost["node_count"] == 3  # signal + case + hypothesis
+    assert cost["tokens_in"] == 150
+    assert cost["tokens_out"] == 60
+    assert cost["llm_calls"] == 3
+
+
+@pytest.mark.integration
+async def test_get_case_cost_of_unknown_case_is_zero(store):
+    """An unknown case_id yields a zeroed dict rather than raising."""
+    cost = await store.get_case_cost("unknown")
+    assert cost["node_count"] == 0
+    assert cost["tokens_in"] == 0
 
 

@@ -248,6 +248,30 @@ class GraphStore:
             logger.warning("work unit %s exhausted its attempts -> failed", node_id[:8])
         return state
 
+    async def record_cost(
+        self, node_id: str, tokens_in: int, tokens_out: int, llm_calls: int, elapsed_ms: float
+    ) -> None:
+        """Accumulate one episode's cost onto its work node. Atomic increment (no
+        read-modify-write race; retries add up). Does NOT emit: this is evaluation
+        bookkeeping, not a domain mutation - emitting node_updated would spuriously
+        wake reactions (e.g. the Synthesizer on node_updated/Investigation)."""
+        query = """
+            MATCH (n {id: $id})
+            SET n.tokens_in  = coalesce(n.tokens_in, 0)  + $tokens_in,
+                n.tokens_out = coalesce(n.tokens_out, 0) + $tokens_out,
+                n.llm_calls  = coalesce(n.llm_calls, 0)  + $llm_calls,
+                n.elapsed_ms = coalesce(n.elapsed_ms, 0) + $elapsed_ms
+        """
+        async with self._driver.session() as session:
+            await session.run(
+                query,
+                id=node_id,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                llm_calls=llm_calls,
+                elapsed_ms=elapsed_ms,
+            )
+
     async def recover_claimed(self, max_attempts: int) -> int:
         """Reset every node stuck in claim_state='claimed' back to 'pending' (or
         'failed' if it has exhausted its attempts), clearing the holder. Call once at
@@ -376,4 +400,34 @@ class GraphStore:
             )
             edges = [dict(record) async for record in result]
         return {"nodes": nodes, "edges": edges}
+
+    async def get_case_cost(self, case_id: str) -> dict:
+        """Total spend of a case subgraph, for evaluation: token/call/time sums plus
+        node count, over every case-scoped node AND the InputSignal that opened it
+        (the open-case episode's cost lands on the signal, one OPENS hop out). Plain
+        dict (like get_full_graph): it feeds metrics/dashboards, not role reasoning."""
+        query = """
+            MATCH (c:Case {id: $case_id})
+            OPTIONAL MATCH (s:InputSignal)-[:OPENS]->(c)
+            OPTIONAL MATCH (n {case_id: $case_id})
+            WITH collect(DISTINCT n) + collect(DISTINCT s) AS nodes
+            UNWIND nodes AS x
+            RETURN count(x) AS node_count,
+                   sum(coalesce(x.tokens_in, 0))  AS tokens_in,
+                   sum(coalesce(x.tokens_out, 0)) AS tokens_out,
+                   sum(coalesce(x.llm_calls, 0))  AS llm_calls,
+                   sum(coalesce(x.elapsed_ms, 0)) AS elapsed_ms
+        """
+        async with self._driver.session() as session:
+            result = await session.run(query, case_id=case_id)
+            record = await result.single()
+        if record is None:
+            return {
+                "node_count": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "llm_calls": 0,
+                "elapsed_ms": 0.0,
+            }
+        return dict(record)
 

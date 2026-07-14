@@ -23,10 +23,19 @@ class Claimable(BaseModel):
     claimed_by_agent_id: str | None = None
     attempts: int = 0
 
+class Measured(BaseModel):
+    """Mixin: the cost of processing this node, accumulated by the runtime after each
+    agent episode."""
+
+    tokens_in: int = 0
+    tokens_out: int = 0
+    llm_calls: int = 0
+    elapsed_ms: float = 0.0
+
 # local nodes (Case-scoped)
 
 
-class InputSignal(NodeBase, Claimable):
+class InputSignal(NodeBase, Claimable, Measured):
     raw_content: str
 
 
@@ -34,7 +43,7 @@ class CaseNode(NodeBase):
     case_id: str
 
 
-class Case(CaseNode, Claimable):
+class Case(CaseNode, Claimable, Measured):
     objective: str
     rationale: str = ""  # why the Theorist framed the case this way
     context: str | None = None
@@ -49,7 +58,7 @@ class Case(CaseNode, Claimable):
         return self
 
 
-class Hypothesis(CaseNode, Claimable):
+class Hypothesis(CaseNode, Claimable, Measured):
     description: str
     rationale: str = ""  # why plausible (or why the evidence suggests it)
     status: Literal["active", "refuted", "confirmed"] = "active"
@@ -64,7 +73,7 @@ class Hypothesis(CaseNode, Claimable):
         return self
 
 
-class Investigation(CaseNode, Claimable):
+class Investigation(CaseNode, Claimable, Measured):
     description: str
     rationale: str = ""  # why this step tests the hypothesis
     status: Literal["blocked", "skipped", "validated", "rejected"] | None = None
@@ -73,7 +82,7 @@ class Investigation(CaseNode, Claimable):
     skip_reason: str | None = None
 
 
-class Evidence(CaseNode):
+class Evidence(CaseNode, Measured):
     content: str
     rationale: str = ""  # why the agent concluded this finding
     triaged: bool = False  # True once the Theorist judged it (generate/refute/nothing);

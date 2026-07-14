@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 from core.agents.base import Agent
 
@@ -31,6 +32,7 @@ class Swarm:
     async def _worker(self) -> None:
         while True:
             agent = await self._queue.get()  # block until there is work (no polling)
+            start = time.monotonic()
             try:
                 await agent.run()
             except Exception:
@@ -44,6 +46,10 @@ class Swarm:
                 await agent.fail()
             else:
                 await agent.complete()
+            finally:
+                # cost is recorded regardless of outcome: the tokens were spent even
+                # if the episode raised (bookkeeping for evaluation, no side effects)
+                await agent.record_cost((time.monotonic() - start) * 1000)
 
     async def aclose(self) -> None:
         for worker in self._workers:

@@ -1,14 +1,15 @@
+import json
 from typing import TypeVar
 
 from pydantic import BaseModel
 
-from core.agents.tool_loop import run_tool_loop
 from core.graph.models import Claimable, NodeBase
-from core.providers.base import LLMProvider
+from core.providers.base import LLMProvider, LLMResponse
 from core.roles.base import ExecuteFn, Executor, Role
 from core.tools.base import ToolRegistry
 
 MAX_ATTEMPTS = 3  # retries of one unit of work before it is marked 'failed' and dropped
+MAX_TOOL_ITERATIONS = 8  # LLM turns per agent run; overflow raises -> fail/retry bounds the spend
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -16,12 +17,12 @@ T = TypeVar("T", bound=BaseModel)
 class Agent(Executor):
     """Ephemeral execution unit. COMPOSES the registered role (a reference) plus the
     per-execution state: the work (a graph node), its own STM, the reaction's
-    execute, and the ENGINE backing this execution (provider + catalog access,
-    stamped by the runtime at spawn). IMPLEMENTS the roles layer's Executor
-    contract explicitly (classic dependency inversion: the declaration layer owns
-    the interface, the execution layer subscribes to it; the import direction stays
-    agents -> roles). Drives its claim lifecycle: complete() on success, fail() on
-    error (bounded by MAX_ATTEMPTS)."""
+    execute, the ENGINE backing this execution (provider + catalog access, stamped
+    by the runtime at spawn), and the running cost counters of this episode.
+    IMPLEMENTS the roles layer's Executor contract explicitly (classic dependency
+    inversion: the declaration layer owns the interface, the execution layer
+    subscribes to it; the import direction stays agents -> roles). Drives its claim
+    lifecycle: complete() on success, fail() on error (bounded by MAX_ATTEMPTS)."""
 
     def __init__(
         self,
@@ -36,6 +37,9 @@ class Agent(Executor):
         self.messages: list[dict] = []  # STM, isolated per agent
         self.provider = provider  # the engine backing THIS execution, not the role's
         self.tools = tools  # access to the common tool catalog
+        self.tokens_in = 0  # cost of this episode, summed over every LLM call in the loop
+        self.tokens_out = 0
+        self.llm_calls = 0
         self._execute = execute  # the reaction's execute, bound to this work
 
     async def run(self) -> None:
@@ -67,6 +71,16 @@ class Agent(Executor):
         response = await run_tool_loop(self.provider, tools, self, messages, response_schema=schema)
         return schema.model_validate_json(response.content)
 
+    async def record_cost(self, elapsed_ms: float) -> None:
+        """Persist what THIS episode spent onto its work node (bookkeeping for
+        evaluation; the framework never reads it back). Called by the worker once the
+        episode ends, on success AND failure - the tokens were spent either way; with
+        retries the store accumulates. Uses store.record_cost, which does not emit an
+        event (a domain mutation here would spuriously wake reactions)."""
+        await self.role.store.record_cost(
+            self.work.id, self.tokens_in, self.tokens_out, self.llm_calls, elapsed_ms
+        )
+
     async def complete(self) -> None:
         if isinstance(self.work, Claimable):
             await self.role.store.complete(self.work.id)  # claimed -> done
@@ -76,3 +90,50 @@ class Agent(Executor):
         if isinstance(self.work, Claimable):
             await self.role.store.fail(self.work.id, MAX_ATTEMPTS)
         await self.role.on_failure(self.work)
+
+
+async def run_tool_loop(
+    provider: LLMProvider,
+    tools: ToolRegistry | None,
+    agent: Agent,
+    messages: list[dict],
+    response_schema: type | None = None,
+) -> LLMResponse:
+    """Drive the loop: the model invokes tools until it emits its final answer.
+    Lives here (not in a separate module) because it mutates the Agent: agent.messages
+    is the STM, and every provider call's usage accumulates onto the agent's cost
+    counters (so the worker can persist the episode's spend, even on a loop that
+    raises). Tool failures return to the model as text (it adapts); a runaway loop
+    raises at MAX_TOOL_ITERATIONS and becomes a normal agent failure."""
+    agent.messages = list(messages)
+    specs = tools.specs() if tools else None
+    for _ in range(MAX_TOOL_ITERATIONS):
+        response = await provider.complete(
+            agent.messages, tools=specs, response_schema=response_schema
+        )
+        agent.tokens_in += response.usage.get("input_tokens", 0)
+        agent.tokens_out += response.usage.get("output_tokens", 0)
+        agent.llm_calls += 1
+        if not response.tool_calls:
+            return response
+        agent.messages.append(
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+                    }
+                    for call in response.tool_calls
+                ],
+            }
+        )
+        for call in response.tool_calls:
+            result = (
+                await tools.run(call.name, call.arguments)
+                if tools
+                else f"error: no tools available (requested '{call.name}')"
+            )
+            agent.messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+    raise RuntimeError(f"tool loop exceeded MAX_TOOL_ITERATIONS ({MAX_TOOL_ITERATIONS})")

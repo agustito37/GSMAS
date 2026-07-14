@@ -11,8 +11,7 @@ from typing import cast
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from core.agents.base import Agent
-from core.agents.tool_loop import MAX_TOOL_ITERATIONS, run_tool_loop
+from core.agents.base import MAX_TOOL_ITERATIONS, Agent, run_tool_loop
 from core.graph.models import NodeBase
 from core.graph.store import GraphStore
 from core.providers.base import LLMResponse, ToolCall
@@ -258,3 +257,29 @@ async def test_run_llm_malformed_answer_is_a_normal_failure():
 
     with pytest.raises(ValidationError):
         await agent.run_llm(system="s", user="u", schema=_Verdict)
+
+
+@pytest.mark.unit
+async def test_run_llm_accumulates_token_cost_across_the_loop():
+    """Every LLM call of the episode (tool-loop turns included) accumulates onto the
+    agent's counters, so the worker can persist what the episode spent."""
+    provider = MockProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="c", name="echo", arguments={"text": "a"})],
+                usage={"input_tokens": 10, "output_tokens": 4},
+            ),
+            LLMResponse(
+                content=json.dumps({"ok": True}),
+                usage={"input_tokens": 7, "output_tokens": 3},
+            ),
+        ]
+    )
+    agent = _agent(provider, tools=ToolRegistry([_EchoTool()]))
+
+    await agent.run_llm(system="s", user="u", schema=_Verdict, tools=agent.tools)
+
+    assert agent.tokens_in == 17  # 10 + 7, both calls
+    assert agent.tokens_out == 7  # 4 + 3
+    assert agent.llm_calls == 2
