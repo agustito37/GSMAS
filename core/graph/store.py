@@ -456,6 +456,32 @@ class GraphStore:
             edges = [dict(record) async for record in result]
         return {"nodes": nodes, "edges": edges}
 
+    async def get_workspace_graph(self, workspace_id: str) -> dict:
+        """Every node and edge scoped to one workspace, for the dashboard's per-workspace
+        view. A node belongs to the workspace if it carries workspace_id (InputSignal,
+        Case, Role) or its case does (the case-scoped nodes, via case_id). Same shape as
+        get_full_graph."""
+        nodes_query = """
+            MATCH (n)
+            WHERE n.workspace_id = $ws
+               OR EXISTS { MATCH (c:Case {id: n.case_id, workspace_id: $ws}) }
+            RETURN labels(n)[0] AS label, properties(n) AS props
+        """
+        edges_query = """
+            MATCH (a)-[r]->(b)
+            WHERE (a.workspace_id = $ws
+                   OR EXISTS { MATCH (ca:Case {id: a.case_id, workspace_id: $ws}) })
+              AND (b.workspace_id = $ws
+                   OR EXISTS { MATCH (cb:Case {id: b.case_id, workspace_id: $ws}) })
+            RETURN a.id AS source, type(r) AS type, b.id AS target
+        """
+        async with self._driver.session() as session:
+            result = await session.run(nodes_query, ws=workspace_id)
+            nodes = [{"label": r["label"], "props": dict(r["props"])} async for r in result]
+            result = await session.run(edges_query, ws=workspace_id)
+            edges = [dict(r) async for r in result]
+        return {"nodes": nodes, "edges": edges}
+
     async def get_case_map(self, case_id: str) -> dict:
         """A compact skeleton of a case for the retrospective to scan: per node its
         type, id, a short label, status and cost (summed token counters), plus the

@@ -3,11 +3,13 @@ import os
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 import config
 from core.events.bus import Event
+from core.graph.models import NodeBase
 from core.providers.openai_provider import OpenAIProvider
 from core.runtime.orchestrator import Orchestrator
 from core.tools.base import ToolRegistry
@@ -21,20 +23,28 @@ logger = logging.getLogger("haive.dashboard")
 
 NEO4J_URI = "bolt://localhost:7687"
 MODEL = "gpt-4o-mini"
+WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 
 
 class EventStream:
-    """Bridges the bus to the connected WebSockets. Just one more observer of the
-    medium: it subscribes like any role would, mutates nothing."""
+    """Bridges the bus to the connected WebSockets, each scoped to ONE workspace. Just one
+    more observer of the medium: it subscribes like any role would, mutates nothing. Every
+    mutation is resolved to a workspace and only forwarded to the clients viewing it."""
 
     def __init__(self) -> None:
-        self.clients: set[WebSocket] = set()
+        self.clients: dict[WebSocket, str] = {}  # ws -> the workspace it is viewing
         self.orchestrator: Orchestrator | None = None
 
     def wire(self, orchestrator: Orchestrator) -> None:
         self.orchestrator = orchestrator
         for event_type in ("node_created", "node_updated", "edge_created"):
             orchestrator.bus.subscribe(event_type, self._forward)
+
+    async def send_snapshot(self, ws: WebSocket, workspace: str) -> None:
+        if self.orchestrator is None:
+            return
+        snapshot = await self.orchestrator.store.get_workspace_graph(workspace)
+        await ws.send_json({"type": "snapshot", "workspace": workspace, **snapshot})
 
     async def _forward(self, event: Event) -> None:
         payload: dict = {
@@ -43,17 +53,36 @@ class EventStream:
             "node_type": event.node_type,
             **event.payload,
         }
-        # enrich node events with the node's current properties (the event is only
-        # a pointer; the client needs the content to draw labels/status)
-        if event.node_id and event.type != "edge_created" and self.orchestrator:
-            node = await self.orchestrator.store.get_node(event.node_id)
+        # resolve the node once: enrich the payload with its props (the event is only a
+        # pointer) AND find its workspace, so the event reaches only the matching clients
+        node_id = event.node_id or event.payload.get("from_id")
+        workspace: str | None = None
+        if node_id and self.orchestrator:
+            node = await self.orchestrator.store.get_node(node_id)
             if node is not None:
-                payload["props"] = node.model_dump(mode="json")
-        for ws in list(self.clients):
+                if event.type != "edge_created":
+                    payload["props"] = node.model_dump(mode="json")
+                workspace = await self._node_workspace(node)
+        for ws, ws_workspace in list(self.clients.items()):
+            if workspace is not None and workspace != ws_workspace:
+                continue
             try:
                 await ws.send_json(payload)
             except Exception:
-                self.clients.discard(ws)
+                self.clients.pop(ws, None)
+
+    async def _node_workspace(self, node: NodeBase) -> str:
+        """The workspace a node belongs to: directly (InputSignal/Case/Role) or via its
+        case (the case-scoped nodes)."""
+        workspace = getattr(node, "workspace_id", None)
+        if workspace:
+            return workspace
+        case_id = getattr(node, "case_id", None)
+        if case_id and self.orchestrator:
+            cases = await self.orchestrator.store.query_nodes("Case", {"case_id": case_id})
+            if cases:
+                return getattr(cases[0], "workspace_id", "default")
+        return "default"
 
 
 stream = EventStream()
@@ -84,189 +113,59 @@ app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/")
-async def index() -> HTMLResponse:
-    return HTMLResponse(PAGE)
+async def index() -> FileResponse:
+    return FileResponse(os.path.join(WEB_DIR, "index.html"))
+
+
+@app.get("/workspaces")
+async def list_workspaces() -> dict:
+    """The known workspaces (their Workspace nodes), plus 'default' always."""
+    nodes = await app.state.orchestrator.store.query_nodes("Workspace", {})
+    ids = sorted({n.id for n in nodes} | {"default"})
+    return {"workspaces": ids}
 
 
 @app.post("/signal")
 async def submit_signal(body: dict) -> dict:
-    signal_id = await app.state.orchestrator.submit_signal(body["content"])
-    logger.info("signal submitted id=%s content=%r", signal_id[:8], body["content"][:80])
+    workspace = body.get("workspace") or "default"
+    signal_id = await app.state.orchestrator.submit_signal(body["content"], workspace)
+    logger.info(
+        "signal submitted id=%s ws=%s content=%r", signal_id[:8], workspace, body["content"][:80]
+    )
     return {"id": signal_id}
+
+
+@app.post("/verdict/{verdict_id}/feedback")
+async def verdict_feedback(verdict_id: str, body: dict) -> dict:
+    """Human feedback on a Verdict: the gate of RQ3. Writes verdict.feedback, whose
+    node_updated/Verdict mutation triggers every LearningRole's retrospective (there is no
+    domain event; the graph state IS the trigger)."""
+    feedback = body.get("feedback")
+    if feedback not in ("correct", "incorrect", "partial"):
+        raise HTTPException(status_code=400, detail="feedback must be correct, incorrect or partial")
+    await app.state.orchestrator.store.update_node(verdict_id, {"feedback": feedback})
+    logger.info("verdict %s feedback=%s -> retrospectives triggered", verdict_id[:8], feedback)
+    return {"ok": True}
 
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()
-    stream.clients.add(ws)
-    snapshot = await app.state.orchestrator.store.get_full_graph()
-    await ws.send_json({"type": "snapshot", **snapshot})
+    stream.clients[ws] = "default"
+    await stream.send_snapshot(ws, "default")
     try:
         while True:
-            await ws.receive_text()  # the client sends nothing; this parks until disconnect
+            # the client sends {"workspace": id} when it switches; re-scope + re-snapshot
+            msg = await ws.receive_json()
+            workspace = msg.get("workspace") or "default"
+            stream.clients[ws] = workspace
+            await stream.send_snapshot(ws, workspace)
     except WebSocketDisconnect:
-        stream.clients.discard(ws)
+        stream.clients.pop(ws, None)
 
 
-PAGE = """<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>haive - live graph</title>
-<script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
-<style>
-  body { margin: 0; font-family: ui-monospace, SFMono-Regular, monospace; display: flex; height: 100vh; }
-  #cy { flex: 1; }
-  #side { width: 360px; border-left: 1px solid #ddd; padding: 12px; overflow: auto; font-size: 12px; }
-  #form { display: flex; gap: 6px; margin-bottom: 10px; }
-  #signal { flex: 1; padding: 6px; }
-  pre { white-space: pre-wrap; word-break: break-word; background: #f6f6f6; padding: 8px; }
-  #log div { border-bottom: 1px solid #eee; padding: 2px 0; }
-  h3 { margin: 12px 0 4px; font-size: 12px; text-transform: uppercase; color: #666; }
-</style>
-</head>
-<body>
-<div id="cy"></div>
-<div id="side">
-  <div id="form">
-    <input id="signal" placeholder="raw content de la InputSignal..." />
-    <button onclick="submitSignal()">investigar</button>
-  </div>
-  <h3>nodo</h3>
-  <pre id="detail">(click en un nodo)</pre>
-  <h3>eventos</h3>
-  <div id="log"></div>
-</div>
-<script>
-const SHAPES = { InputSignal: "round-rectangle", Case: "star", Hypothesis: "hexagon",
-                 Investigation: "ellipse", Evidence: "triangle", Verdict: "diamond" };
-const COLORS = { InputSignal: "#3182ce", Case: "#805ad5", Hypothesis: "#6b46c1",
-                 Investigation: "#d69e2e", Evidence: "#38a169", Verdict: "#e53e3e" };
-
-const cy = cytoscape({
-  container: document.getElementById("cy"),
-  style: [
-    { selector: "node", style: {
-        label: "data(text)", "font-size": 9, "text-wrap": "wrap", "text-max-width": 120,
-        "text-valign": "bottom", "text-margin-y": 4, width: 36, height: 36,
-        "background-color": "#999" } },
-    { selector: "node[status='refuted']", style: { opacity: 0.45, "border-width": 3, "border-color": "#e53e3e" } },
-    { selector: "node[status='skipped']", style: { opacity: 0.4, "border-width": 2, "border-style": "dashed" } },
-    { selector: "node[claim='claimed']", style: { "border-width": 3, "border-color": "#f6ad55" } },
-    { selector: "edge", style: {
-        label: "data(kind)", "font-size": 7, color: "#666", width: 1.5,
-        "curve-style": "bezier", "target-arrow-shape": "triangle", "arrow-scale": 0.8 } },
-    { selector: "edge[kind='SUGGESTS']", style: {
-        "line-color": "#e53e3e", "target-arrow-color": "#e53e3e", "line-style": "dashed", width: 2.5 } },
-  ],
-});
-
-let pendingEdges = [];
-let layoutTimer = null;
-function relayout() {
-  clearTimeout(layoutTimer);
-  layoutTimer = setTimeout(() => cy.layout({
-    // hierarchical: the case graph IS a tree (signal -> case -> hypothesis ->
-    // investigation -> evidence); layers never overlap, unlike force layouts
-    name: "breadthfirst",
-    directed: true,
-    roots: 'node[type="InputSignal"]',
-    spacingFactor: 1.15,
-    padding: 40,
-    animate: false,
-  }).run(), 250);
-}
-
-function nodeText(label, props) {
-  // short labels: one truncated line (the full text lives in the click panel);
-  // long multi-line labels are what made the graph unreadable
-  const body = props.description || props.content || props.objective || props.raw_content || props.kind || "";
-  const short = String(body).slice(0, 42) + (String(body).length > 42 ? "..." : "");
-  return label + "\\n" + short;
-}
-
-function upsertNode(label, props) {
-  const data = { id: props.id, type: label, text: nodeText(label, props),
-                 status: props.status || "", claim: props.claim_state || "", props: props };
-  const existing = cy.getElementById(props.id);
-  if (existing.length) { existing.data(data); }
-  else {
-    const el = cy.add({ group: "nodes", data: data });
-    el.style({ shape: SHAPES[label] || "ellipse", "background-color": COLORS[label] || "#999" });
-    flushPendingEdges();
-  }
-  relayout();
-}
-
-function addEdge(source, kind, target) {
-  const id = source + "-" + kind + "-" + target;
-  if (cy.getElementById(id).length) return;
-  if (!cy.getElementById(source).length || !cy.getElementById(target).length) {
-    pendingEdges.push([source, kind, target]);  // endpoint not drawn yet: retry later
-    return;
-  }
-  cy.add({ group: "edges", data: { id: id, source: source, target: target, kind: kind } });
-  relayout();
-}
-
-function flushPendingEdges() {
-  const retry = pendingEdges; pendingEdges = [];
-  retry.forEach(([s, k, t]) => addEdge(s, k, t));
-}
-
-function logLine(text) {
-  const log = document.getElementById("log");
-  const div = document.createElement("div");
-  div.textContent = text;
-  log.prepend(div);
-  while (log.childElementCount > 60) log.lastChild.remove();
-}
-
-cy.on("tap", "node", (event) => {
-  document.getElementById("detail").textContent =
-    JSON.stringify(event.target.data("props"), null, 2);
-});
-
-const ws = new WebSocket(`ws://${location.host}/ws`);
-ws.onmessage = (message) => {
-  const msg = JSON.parse(message.data);
-  if (msg.type === "snapshot") {
-    msg.nodes.forEach((n) => upsertNode(n.label, n.props));
-    msg.edges.forEach((e) => addEdge(e.source, e.type, e.target));
-    logLine(`snapshot: ${msg.nodes.length} nodos, ${msg.edges.length} aristas`);
-  } else if (msg.type === "node_created" || msg.type === "node_updated") {
-    if (msg.props) upsertNode(msg.node_type, msg.props);
-    logLine(`${msg.type} ${msg.node_type} ${(msg.node_id || "").slice(0, 8)}`);
-  } else if (msg.type === "edge_created") {
-    addEdge(msg.from_id, msg.edge_type, msg.to_id);
-    logLine(`edge ${msg.edge_type}`);
-  }
-};
-
-async function submitSignal() {
-  const input = document.getElementById("signal");
-  if (!input.value.trim()) return;
-  try {
-    const res = await fetch("/signal", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: input.value }),
-    });
-    const body = await res.json();
-    logLine(`>> senal enviada (${(body.id || "?").slice(0, 8)}) - investigando...`);
-    input.value = "";
-  } catch (err) {
-    logLine(">> ERROR enviando la senal: " + err);
-  }
-}
-
-// Enter also submits (not only the button)
-document.getElementById("signal").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") submitSignal();
-});
-</script>
-</body>
-</html>"""
+# static UI (the dashboard lives in app/web/; mounted last so it does not shadow routes)
+app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ install:
 	uv sync
 
 run:
-	uv run python main.py
+	uv run python -m app.main
 
 lint:
 	uv run ruff check .
