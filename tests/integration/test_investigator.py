@@ -9,7 +9,7 @@ import json
 import pytest
 
 from core.agents.base import Agent
-from core.graph.models import Case, Hypothesis, InputSignal, Investigation
+from core.graph.models import Case, Hypothesis, InputSignal, Investigation, Skill
 from core.graph.store import EdgeSpec
 from core.providers.base import LLMResponse, ToolCall
 from core.tools.base import ToolRegistry
@@ -104,3 +104,43 @@ async def test_investigator_neutral_finding_creates_no_stance_edge(store):
     assert len(produced) == 1
     assert await store.get_supporting_evidence(hypothesis.id) == []
     assert await store.get_refuting_evidence(hypothesis.id) == []
+
+
+@pytest.mark.integration
+async def test_investigator_fetches_a_skill_and_records_it_applied(store):
+    """With a skill in its role's LTM for the case's workspace, the Investigator gets
+    the summary in its prompt index, fetches the procedure with get_skill, and (fetched
+    = used) records an APPLIED edge on the work unit (the investigation)."""
+    case, hypothesis, investigation = await _seed_investigation(store)
+    role_id = await store.ensure_role("default", "investigator")
+    skill = Skill(role_id=role_id, summary="check MFA first", content="query mfa enrollment")
+    skill_id = await store.create_skill(skill, case.id)
+
+    provider = MockProvider([
+        LLMResponse(content="", tool_calls=[
+            ToolCall(id="c1", name="get_skill", arguments={"skill_id": skill_id})
+        ]),
+        LLMResponse(content=json.dumps({
+            "content": "mfa was recently enrolled from a new device",
+            "rationale": "the telemetry shows a new-device MFA enrollment",
+            "stance": "supports",
+        })),
+    ])
+    investigator = Investigator(store)
+    work = await investigator.reactions()[0].claim()
+    assert work is not None
+    agent = Agent(
+        investigator, investigator.reactions()[0].execute, work,
+        provider=provider, tools=ToolRegistry([]),
+    )
+    await agent.run()
+
+    # the index (summary) was injected, and get_skill returned the procedure
+    user_msg = next(m for m in agent.messages if m.get("role") == "user")
+    assert "check MFA first" in user_msg["content"]
+    assert "query mfa enrollment" not in user_msg["content"]
+    tool_msgs = [m for m in agent.messages if m.get("role") == "tool"]
+    assert any("query mfa enrollment" in m["content"] for m in tool_msgs)
+    # fetched = used -> APPLIED edge from the work unit (the investigation)
+    applied = await store.get_neighbors(investigation.id, "APPLIED", target_label="Skill")
+    assert [s.id for s in applied] == [skill_id]

@@ -62,6 +62,9 @@ class Role(ABC):
     agents share it safely. The graph's Role.agent_type remains as descriptive
     metadata; it is not a class hierarchy."""
 
+    name: str = ""  # stable identity of the role; concrete roles set it
+    kind: str = "domain"  # domain vs system
+
     def __init__(self, store: GraphStore) -> None:
         self.store = store
 
@@ -77,3 +80,18 @@ class Role(ABC):
         """Optional hook called AFTER the framework's retry guard ran (store.fail
         already incremented attempts and moved the node to pending or failed). For
         custom cleanup/logging only; default no-op."""
+
+    async def reason(self, agent: Executor, *, system: str, user: str, schema: type[T]) -> T:
+        """Make one LLM judgment for this reaction and return it parsed into `schema`,
+        delegating to the agent's engine. This is the plain judgment; a role that
+        learns overrides it to bring its learned skills to bear (see LearningRole).
+        Roles always call this, never agent.run_llm directly, so learning turns on by
+        the class, not per call."""
+        return await agent.run_llm(system=system, user=user, schema=schema, tools=agent.tools)
+
+    def all_reactions(self) -> list[Reaction]:
+        """Every reaction to wire for this role: its own (reactions()) plus any the
+        framework attaches around them. The base adds none; a LearningRole appends its
+        retrospective here. The orchestrator wires all_reactions(), not reactions(), so
+        a role never hand-wires framework behavior."""
+        return self.reactions()

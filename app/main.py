@@ -71,8 +71,8 @@ async def lifespan(app: FastAPI):
     provider = OpenAIProvider(model=MODEL, api_key=config.OPENAI_API_KEY)
     orchestrator.register(Investigator(orchestrator.store), provider=provider)
     orchestrator.register(Theorist(orchestrator.store), provider=provider)
-    orchestrator.register(Planner(orchestrator.store))
-    orchestrator.register(Synthesizer(orchestrator.store))
+    orchestrator.register(Planner(orchestrator.store), provider=provider)
+    orchestrator.register(Synthesizer(orchestrator.store), provider=provider)
     stream.wire(orchestrator)
     await orchestrator.start()
     app.state.orchestrator = orchestrator

@@ -5,7 +5,8 @@ from pydantic import BaseModel
 
 from core.graph.models import Case, Evidence, Hypothesis, InputSignal, NodeBase
 from core.graph.store import EdgeSpec
-from core.roles.base import Executor, Reaction, Role
+from core.learning.learning_role import LearningRole
+from core.roles.base import Executor, Reaction
 
 logger = logging.getLogger("haive.theorist")
 
@@ -55,7 +56,7 @@ class _TriageOutput(BaseModel):
     refuted: list[_Refutation]
 
 
-class Theorist(Role):
+class Theorist(LearningRole):
     """Owner of the hypothesis space, with two reactions:
     (1) open: on a new InputSignal, open the Case and derive the initial hypotheses.
     (2) triage (the generative motor): on each new Evidence, judge whether the
@@ -63,7 +64,10 @@ class Theorist(Role):
         branch) and/or conclusively refutes an active one (refuted + skip its pending
         investigations). Marks the Evidence triaged AFTER judging: the mark's event
         re-wakes the Synthesizer, so closure cannot outrun generation.
-    Singleton while the scope is one case at a time."""
+    Singleton while the scope is one case at a time. Learns: its hypothesizing and
+    triage procedures accumulate as skills."""
+
+    name = "theorist"
 
     def __init__(self, store) -> None:
         super().__init__(store)
@@ -84,11 +88,16 @@ class Theorist(Role):
 
     async def _open_case(self, agent: Executor) -> None:
         signal = cast(InputSignal, agent.work)  # the claim only returns InputSignals
-        out = await agent.run_llm(
-            system=_OPEN_PROMPT, user=signal.raw_content, schema=_TheoristOutput
+        out = await self.reason(
+            agent, system=_OPEN_PROMPT, user=signal.raw_content, schema=_TheoristOutput
         )
 
-        case = Case(objective=out.objective, rationale=out.rationale, case_id="")
+        case = Case(
+            objective=out.objective,
+            rationale=out.rationale,
+            case_id="",
+            workspace_id=signal.workspace_id,  # inherit the workspace from the signal
+        )
         await self.store.create_node(case, "Case", edges=[EdgeSpec("OPENS", signal.id)])
 
         for hyp in out.hypotheses:
@@ -126,7 +135,8 @@ class Theorist(Role):
         listing = "\n".join(
             f"- id={h.id} status={h.status}: {h.description}" for h in hypotheses
         )
-        out = await agent.run_llm(
+        out = await self.reason(
+            agent,
             system=_TRIAGE_PROMPT,
             user=(
                 f"Case objective: {objective}\n\nHypotheses:\n{listing}\n\n"

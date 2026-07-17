@@ -11,7 +11,7 @@ class OpenAIProvider(LLMProvider):
 
     def __init__(self, model: str, api_key: str | None = None, max_retries: int = 3) -> None:
         # api_key=None -> the SDK reads OPENAI_API_KEY from the environment.
-        # max_retries uses the SDK's built-in exponential backoff — no need to
+        # max_retries uses the SDK's built-in exponential backoff: no need to
         # hand-roll retries.
         self._client = AsyncOpenAI(api_key=api_key, max_retries=max_retries)
         self._model = model

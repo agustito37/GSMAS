@@ -1,8 +1,7 @@
 """End-to-end minimal flow: InputSignal -> Case -> Hypotheses -> Investigations ->
-Evidence -> Verdict, driving the four REAL roles (the Theorist's and Investigator's
-agents on MockProviders, Planner and Synthesizer deterministic) over the runtime +
-Neo4j. Roles register engine-free; each one's provider is given at registration and
-stamped on its agents at spawn.
+Evidence -> Verdict, driving the four REAL roles (all four agents on MockProviders) over
+the runtime + Neo4j. Roles register engine-free; each one's provider is given at
+registration and stamped on its agents at spawn.
 
     uv run pytest -m integration
 """
@@ -46,6 +45,26 @@ _NEUTRAL_FINDING = json.dumps(
     }
 )
 
+# the Synthesizer weighs the (neutral) evidence and reasons the verdict; both
+# investigations returned nothing, so 'inconclusive' is the grounded call
+_VERDICT_OUTPUT = json.dumps(
+    {
+        "kind": "inconclusive",
+        "content": "no telemetry was available to settle the case",
+        "rationale": "both investigations returned neutral findings",
+    }
+)
+
+# the Planner reasons the plan for each hypothesis; one step per hypothesis keeps the
+# structural assertion (one investigation per hypothesis) intact
+_PLAN_OUTPUT = json.dumps(
+    {
+        "steps": [
+            {"description": "check jdoe's auth logs", "rationale": "test the hypothesis directly"}
+        ]
+    }
+)
+
 
 @pytest_asyncio.fixture
 async def orchestrator(neo4j_container):
@@ -86,7 +105,12 @@ async def test_input_signal_reaches_a_verdict(orchestrator):
             ]
         ),
     )
-    orchestrator.register(Planner(store))
+    orchestrator.register(
+        Planner(store),
+        provider=MockProvider(
+            [LLMResponse(content=_PLAN_OUTPUT), LLMResponse(content=_PLAN_OUTPUT)]
+        ),
+    )
     orchestrator.register(
         Investigator(store),
         provider=MockProvider(
@@ -96,7 +120,10 @@ async def test_input_signal_reaches_a_verdict(orchestrator):
             ]
         ),
     )
-    orchestrator.register(Synthesizer(store))
+    orchestrator.register(
+        Synthesizer(store),
+        provider=MockProvider([LLMResponse(content=_VERDICT_OUTPUT)]),
+    )
 
     await orchestrator.start()
     await orchestrator.submit_signal("suspicious login from a new country")

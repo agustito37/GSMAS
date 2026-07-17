@@ -61,7 +61,7 @@ class Orchestrator:
         whose judgments are pure rules register without one."""
         self._roles.append(role)
         self._providers[role] = provider
-        for reaction in role.reactions():
+        for reaction in role.all_reactions():
             for event_type, node_type in reaction.triggers:
                 self._bus.subscribe(
                     event_type, self._handler_for(role, reaction), node_type=node_type
@@ -95,14 +95,16 @@ class Orchestrator:
             recovered,
         )
         for role in self._roles:
-            for reaction in role.reactions():
+            for reaction in role.all_reactions():
                 await self._drain(role, reaction)
 
     # ---- lifecycle ----
-    async def submit_signal(self, raw_content: str) -> str:
-        """Materialize an InputSignal and return its id. The ONLY intake step;
-        opening the Case is the Theorist's decision (a registered role)."""
-        signal = InputSignal(raw_content=raw_content)
+    async def submit_signal(self, raw_content: str, workspace_id: str = "default") -> str:
+        """Materialize an InputSignal in a workspace and return its id. The ONLY intake
+        step; opening the Case is the Theorist's decision (a registered role). The
+        workspace scopes all learning of the case this signal opens."""
+        await self._store.ensure_workspace(workspace_id)
+        signal = InputSignal(raw_content=raw_content, workspace_id=workspace_id)
         await self._store.create_node(signal, "InputSignal")
         return signal.id
 

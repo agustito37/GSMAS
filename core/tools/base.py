@@ -51,3 +51,8 @@ class ToolRegistry:
             return await tool.run(**arguments)
         except Exception as exc:  # noqa: BLE001 - the model is the error handler here
             return f"error running '{name}': {exc}"
+
+    def with_tool(self, tool: Tool) -> ToolRegistry:
+        """A new registry with `tool` added; the base catalog is not mutated, so a
+        per-judgment tool never leaks into other agents."""
+        return ToolRegistry([*self._tools.values(), tool])

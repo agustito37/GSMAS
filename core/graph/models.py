@@ -37,6 +37,7 @@ class Measured(BaseModel):
 
 class InputSignal(NodeBase, Claimable, Measured):
     raw_content: str
+    workspace_id: str = "default"
 
 
 class CaseNode(NodeBase):
@@ -45,6 +46,7 @@ class CaseNode(NodeBase):
 
 class Case(CaseNode, Claimable, Measured):
     objective: str
+    workspace_id: str = "default"
     rationale: str = ""  # why the Theorist framed the case this way
     context: str | None = None
     status: Literal["active", "closed", "archived"] = "active"
@@ -62,7 +64,7 @@ class Hypothesis(CaseNode, Claimable, Measured):
     description: str
     rationale: str = ""  # why plausible (or why the evidence suggests it)
     status: Literal["active", "refuted", "confirmed"] = "active"
-    root_id: str = ""  # initial hypothesis of its branch; max 4 per branch (part 4)
+    root_id: str = ""  # initial hypothesis of its branch; generation is capped per branch
     refutation_reason: str | None = None  # the judgment that refuted it (if refuted)
 
     @model_validator(mode="after")
@@ -101,8 +103,9 @@ class Verdict(CaseNode):
 
 class Role(NodeBase):
     name: str
-    kind: Literal["domain", "system"]
-    agent_type: Literal["llm", "deterministic"]
+    workspace_id: str = ""
+    kind: Literal["domain", "system"] = "domain"
+    agent_type: Literal["llm", "deterministic"] | None = None
 
 
 class LTM(NodeBase):
@@ -114,12 +117,17 @@ class Skill(NodeBase):
     summary: str  # for indexing retrieval
     content: str
     rationale: str = ""  # why the retrospective created/changed this skill
+    status: Literal["active", "retired"] = "active"
 
 
 class Agent(NodeBase):
     role_id: str
     type: Literal["llm", "human"]
     status: Literal["idle", "working", "terminated"] = "idle"
+
+
+class Workspace(NodeBase):
+    """Top-level scope: a container of cases whose per-role skills are isolated."""
 
 
 LABEL_TO_MODEL: dict[str, type[NodeBase]] = {
@@ -130,6 +138,7 @@ LABEL_TO_MODEL: dict[str, type[NodeBase]] = {
     "Evidence": Evidence,
     "Verdict": Verdict,
     "Role": Role,
+    "Workspace": Workspace,
     "LTM": LTM,
     "Skill": Skill,
     "Agent": Agent,

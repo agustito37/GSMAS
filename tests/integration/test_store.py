@@ -7,7 +7,7 @@ case-scoped nodes are created WITH their birth edges, atomically. Run with:
 
 import pytest
 
-from core.graph.models import Case, Evidence, Hypothesis, InputSignal, Investigation
+from core.graph.models import Case, Evidence, Hypothesis, InputSignal, Investigation, Skill
 from core.graph.store import EdgeSpec, GraphStore
 
 
@@ -395,5 +395,164 @@ async def test_get_case_cost_of_unknown_case_is_zero(store):
     cost = await store.get_case_cost("unknown")
     assert cost["node_count"] == 0
     assert cost["tokens_in"] == 0
+
+
+# ---------- workspace + role reification ----------
+
+
+@pytest.mark.integration
+async def test_ensure_workspace_is_idempotent(store):
+    """ensure_workspace is find-or-create keyed by id: one Workspace node, stable."""
+    first = await store.ensure_workspace("exp1")
+    second = await store.ensure_workspace("exp1")
+
+    assert first == "exp1" and second == "exp1"
+    workspaces = await store.query_nodes("Workspace", {})
+    assert [w.id for w in workspaces] == ["exp1"]
+
+
+@pytest.mark.integration
+async def test_ensure_role_is_workspace_scoped_and_idempotent(store):
+    """A Role is a node per (workspace, name), born connected to its Workspace by
+    HAS_ROLE, with a stable id; the SAME role name in a different workspace is a
+    DISTINCT node (so their skills never cross)."""
+    a = await store.ensure_role("exp1", "theorist")
+    again = await store.ensure_role("exp1", "theorist")
+    b = await store.ensure_role("exp2", "theorist")
+
+    assert a == "exp1:theorist" and again == "exp1:theorist"
+    assert b == "exp2:theorist"  # same name, different workspace -> different node
+    roles = await store.query_nodes("Role", {})
+    assert {r.id for r in roles} == {"exp1:theorist", "exp2:theorist"}
+    under_exp1 = await store.get_neighbors("exp1", "HAS_ROLE", target_label="Role")
+    assert [r.id for r in under_exp1] == ["exp1:theorist"]
+
+
+# ---------- skills ----------
+
+
+@pytest.mark.integration
+async def test_create_skill_born_connected(store):
+    """A skill is born connected to its Role (HAS_SKILL) and to the Case that taught
+    it (CORROBORATED_BY), carrying the (workspace, role) scope via role_id."""
+    role_id = await store.ensure_role("default", "investigator")
+    case = await _open_case(store)
+    skill = Skill(
+        role_id=role_id,
+        summary="check MFA before assuming credential theft",
+        content="query mfa enrollment, then helpdesk tickets, then prior logins",
+    )
+
+    skill_id = await store.create_skill(skill, case.id)
+
+    assert skill.status == "active"
+    of_role = await store.get_neighbors(role_id, "HAS_SKILL", target_label="Skill")
+    assert [s.id for s in of_role] == [skill_id]
+    corroborated = await store.get_neighbors(skill_id, "CORROBORATED_BY", target_label="Case")
+    assert [c.id for c in corroborated] == [case.id]
+
+
+@pytest.mark.integration
+async def test_skill_support_counts_corroborations_and_refutations(store):
+    """get_skill_support counts the visible corroboration/refutation edges (the
+    origin case is the first corroboration); no hidden counter."""
+    role_id = await store.ensure_role("default", "investigator")
+    origin = await _open_case(store)
+    second = await _open_case(store)
+    third = await _open_case(store)
+    skill = Skill(role_id=role_id, summary="s", content="c")
+    skill_id = await store.create_skill(skill, origin.id)
+
+    await store.add_corroboration(skill_id, second.id)
+    await store.add_refutation(skill_id, third.id)
+
+    support = await store.get_skill_support(skill_id)
+    assert support["corroborations"] == 2  # origin + second
+    assert support["refutations"] == 1
+
+
+@pytest.mark.integration
+async def test_get_active_skills_excludes_retired(store):
+    """Retrieval returns only active skills of the role; a retired one stays in the
+    graph but leaves the active set."""
+    role_id = await store.ensure_role("default", "investigator")
+    case = await _open_case(store)
+    keep = Skill(role_id=role_id, summary="keep", content="c")
+    drop = Skill(role_id=role_id, summary="drop", content="c")
+    keep_id = await store.create_skill(keep, case.id)
+    drop_id = await store.create_skill(drop, case.id)
+
+    await store.retire_skill(drop_id)
+
+    active = await store.get_active_skills(role_id)
+    assert [s.id for s in active] == [keep_id]
+    assert len(await store.query_nodes("Skill", {})) == 2  # the retired one still exists
+
+
+@pytest.mark.integration
+async def test_mark_skill_applied_links_the_produced_node(store):
+    """An APPLIED edge records that a produced node was made using a skill (used, not
+    just retrieved)."""
+    role_id = await store.ensure_role("default", "investigator")
+    case = await _open_case(store)
+    skill = Skill(role_id=role_id, summary="s", content="c")
+    skill_id = await store.create_skill(skill, case.id)
+    hypothesis = await _derive_hypothesis(store, case)
+    investigation = await _plan_investigation(store, hypothesis)
+    evidence = Evidence(content="e", case_id=case.id)
+    await store.create_node(evidence, "Evidence", edges=[EdgeSpec("PRODUCES", investigation.id)])
+
+    await store.mark_skill_applied(evidence.id, skill_id)
+
+    applied = await store.get_neighbors(evidence.id, "APPLIED", target_label="Skill")
+    assert [s.id for s in applied] == [skill_id]
+
+
+# ---------- case map (retrospective's view) ----------
+
+
+@pytest.mark.integration
+async def test_get_case_map_is_a_compact_skeleton(store):
+    """get_case_map returns the case's nodes (type/id/short label/status/cost) plus
+    the reasoning edges, including the opening signal."""
+    signal = InputSignal(raw_content="suspicious login for jdoe")
+    await store.create_node(signal, "InputSignal")
+    case = Case(objective="determine if the login is malicious", case_id="")
+    await store.create_node(case, "Case", edges=[EdgeSpec("OPENS", signal.id)])
+    hypothesis = await _derive_hypothesis(store, case)
+    investigation = await _plan_investigation(store, hypothesis)
+    await store.record_cost(investigation.id, 120, 30, 2, 0.0)
+
+    m = await store.get_case_map(case.id)
+
+    by_id = {n["id"]: n for n in m["nodes"]}
+    assert set(by_id) == {signal.id, case.id, hypothesis.id, investigation.id}
+    assert by_id[investigation.id]["type"] == "Investigation"
+    assert by_id[investigation.id]["tokens"] == 150  # 120 + 30, from the effort counters
+    assert by_id[case.id]["label"].startswith("determine if the login")
+    edges = {(e["source"], e["type"], e["target"]) for e in m["edges"]}
+    assert (signal.id, "OPENS", case.id) in edges
+    assert (case.id, "DERIVES", hypothesis.id) in edges
+    assert (hypothesis.id, "TESTS", investigation.id) in edges
+
+
+@pytest.mark.integration
+async def test_get_case_map_excludes_external_edges(store):
+    """An APPLIED edge (evidence -> skill, out of the case) is NOT in the map: the
+    skeleton is the case's own reasoning, not its links to shared nodes."""
+    role_id = await store.ensure_role("default", "investigator")
+    case = await _open_case(store)
+    hypothesis = await _derive_hypothesis(store, case)
+    investigation = await _plan_investigation(store, hypothesis)
+    evidence = Evidence(content="found it", case_id=case.id)
+    await store.create_node(evidence, "Evidence", edges=[EdgeSpec("PRODUCES", investigation.id)])
+    skill = Skill(role_id=role_id, summary="s", content="c")
+    skill_id = await store.create_skill(skill, case.id)
+    await store.mark_skill_applied(evidence.id, skill_id)
+
+    m = await store.get_case_map(case.id)
+
+    assert skill_id not in {n["id"] for n in m["nodes"]}  # skill is not a case node
+    assert all(e["type"] != "APPLIED" for e in m["edges"])  # the out-of-case edge is dropped
 
 

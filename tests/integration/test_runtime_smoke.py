@@ -114,3 +114,17 @@ async def test_wait_for_closure_completes_when_verdict_appears_after(orchestrato
     await orchestrator.store.create_node(verdict, "Verdict", edges=[EdgeSpec("CONCLUDES", case.id)])
 
     await asyncio.wait_for(waiter, timeout=5)  # must complete
+
+
+@pytest.mark.integration
+async def test_submit_signal_scopes_to_a_workspace(orchestrator):
+    """A signal is submitted into a workspace: the InputSignal carries the
+    workspace_id and the Workspace node is ensured (the scope every skill inherits)."""
+    await orchestrator.start()
+    signal_id = await orchestrator.submit_signal("a signal", workspace_id="exp1")
+
+    signal = await orchestrator.store.get_node(signal_id)
+    assert isinstance(signal, InputSignal)
+    assert signal.workspace_id == "exp1"
+    workspaces = await orchestrator.store.query_nodes("Workspace", {})
+    assert "exp1" in [w.id for w in workspaces]

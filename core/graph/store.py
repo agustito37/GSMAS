@@ -13,6 +13,7 @@ from core.graph.models import (
     Hypothesis,
     Investigation,
     NodeBase,
+    Skill,
     to_model,
 )
 
@@ -66,6 +67,37 @@ class GraphStore:
         return to_model(label, props)
 
     # ---------- layer 1: generic primitives ----------
+
+    async def ensure_workspace(self, workspace_id: str) -> str:
+        """Find-or-create the Workspace container (keyed by its id). Idempotent.
+        Infrastructure setup, not a case mutation, so it does NOT emit."""
+        query = "MERGE (w:Workspace {id: $id}) RETURN w.id AS id"
+        async with self._driver.session() as session:
+            result = await session.run(query, id=workspace_id)
+            record = await result.single()
+        assert record is not None  # MERGE ... RETURN always yields exactly one row
+        return record["id"]
+
+    async def ensure_role(self, workspace_id: str, name: str, kind: str = "domain") -> str:
+        """Find-or-create the Role node for (workspace, name), born connected to its
+        Workspace via HAS_ROLE. The role is scoped to the workspace in the graph:
+        id = '{workspace}:{name}', stable across restarts so its skills persist.
+        Idempotent (MERGE). Returns the role_id. Does NOT emit."""
+        role_id = f"{workspace_id}:{name}"
+        query = """
+            MERGE (w:Workspace {id: $ws})
+            MERGE (r:Role {id: $role_id})
+              ON CREATE SET r.name = $name, r.kind = $kind, r.workspace_id = $ws
+            MERGE (w)-[:HAS_ROLE]->(r)
+            RETURN r.id AS id
+        """
+        async with self._driver.session() as session:
+            result = await session.run(
+                query, ws=workspace_id, role_id=role_id, name=name, kind=kind
+            )
+            record = await result.single()
+        assert record is not None  # MERGE ... RETURN always yields exactly one row
+        return record["id"]
 
     async def create_node(
         self, node: NodeBase, label: str, edges: Sequence[EdgeSpec] = ()
@@ -319,6 +351,29 @@ class GraphStore:
             record = await result.single()
         return cast(Case, self._to_model(record["c"])) if record else None
 
+    async def claim_case_for_retrospection(self, role_name: str) -> Case | None:
+        """Claim a closed case (a Verdict carrying human feedback) this role has NOT
+        retrospected yet, mark it RETROSPECTED from the workspace-scoped role node
+        (ensured here), and return it. Serialized by the claim lock so each (role,
+        case) is retrospected exactly once; survives restarts (the marker is a graph
+        edge, not in-memory state)."""
+        query = """
+            MATCH (c:Case)-[:CONCLUDES]->(v:Verdict)
+            WHERE v.feedback IS NOT NULL
+              AND NOT EXISTS {
+                MATCH (r:Role {id: c.workspace_id + ':' + $name})-[:RETROSPECTED]->(c)
+              }
+            WITH c LIMIT 1
+            MERGE (r:Role {id: c.workspace_id + ':' + $name})
+              ON CREATE SET r.name = $name, r.kind = 'domain', r.workspace_id = c.workspace_id
+            MERGE (r)-[:RETROSPECTED]->(c)
+            RETURN c
+        """
+        async with self._claim_lock, self._driver.session() as session:
+            result = await session.run(query, name=role_name)
+            record = await result.single()
+        return cast(Case, self._to_model(record["c"])) if record else None
+
     async def skip(self, node_id: str, reason: str) -> bool:
         """Terminally skip a work unit that is still PENDING, atomically: sets the
         domain outcome (status='skipped' + skip_reason) and claim_state='done' so no
@@ -400,6 +455,120 @@ class GraphStore:
             )
             edges = [dict(record) async for record in result]
         return {"nodes": nodes, "edges": edges}
+
+    async def get_case_map(self, case_id: str) -> dict:
+        """A compact skeleton of a case for the retrospective to scan: per node its
+        type, id, a short label, status and cost (summed token counters), plus the
+        reasoning edges. Deliberately NOT the full content: the reader zooms into the
+        nodes that matter with get_node, keeping its context small. Plain dicts."""
+        nodes_query = """
+            MATCH (c:Case {id: $case_id})
+            OPTIONAL MATCH (sig:InputSignal)-[:OPENS]->(c)
+            OPTIONAL MATCH (n {case_id: $case_id})
+            WITH collect(DISTINCT n) + collect(DISTINCT sig) AS ns
+            UNWIND ns AS x
+            WITH DISTINCT x
+            RETURN labels(x)[0] AS type,
+                   x.id AS id,
+                   coalesce(x.description, x.content, x.objective, x.raw_content, '') AS label,
+                   coalesce(x.status, x.claim_state, '') AS status,
+                   coalesce(x.tokens_in, 0) + coalesce(x.tokens_out, 0) AS tokens
+        """
+        edges_query = """
+            MATCH (a)-[r]->(b)
+            WHERE (a.case_id = $case_id AND b.case_id = $case_id)
+               OR (a:InputSignal AND b:Case AND b.id = $case_id)
+            RETURN a.id AS source, type(r) AS type, b.id AS target
+        """
+        async with self._driver.session() as session:
+            result = await session.run(nodes_query, case_id=case_id)
+            nodes = [{**dict(rec), "label": (rec["label"] or "")[:80]} async for rec in result]
+            result = await session.run(edges_query, case_id=case_id)
+            edges = [dict(rec) async for rec in result]
+        return {"nodes": nodes, "edges": edges}
+
+    async def create_skill(self, skill: Skill, case_id: str) -> str:
+        """Create a Skill born connected: HAS_SKILL from its Role (skill.role_id) and
+        CORROBORATED_BY to the Case that first taught it. The (workspace, role) scope
+        is carried by skill.role_id = '{workspace}:{name}'."""
+        return await self.create_node(
+            skill,
+            "Skill",
+            edges=[
+                EdgeSpec("HAS_SKILL", skill.role_id, direction="in"),
+                EdgeSpec("CORROBORATED_BY", case_id, direction="out"),
+            ],
+        )
+
+    async def add_corroboration(self, skill_id: str, case_id: str) -> None:
+        """Link a skill to a case that corroborated it (applied + correct outcome)."""
+        await self.create_edge(skill_id, case_id, "CORROBORATED_BY")
+
+    async def add_refutation(self, skill_id: str, case_id: str) -> None:
+        """Link a skill to a case that refuted it (applied + wrong outcome, blamed)."""
+        await self.create_edge(skill_id, case_id, "REFUTED_BY")
+
+    async def mark_skill_applied(self, node_id: str, skill_id: str) -> None:
+        """Record that a work unit used a skill (an APPLIED edge, work -> skill).
+        Idempotent (MERGE), so a retried judgment does not duplicate it. Does NOT
+        emit: learning bookkeeping, not a domain mutation."""
+        query = "MATCH (a {id: $a}), (s:Skill {id: $s}) MERGE (a)-[:APPLIED]->(s)"
+        async with self._driver.session() as session:
+            await session.run(query, a=node_id, s=skill_id)
+
+    async def retire_skill(self, skill_id: str) -> None:
+        """Take a skill out of active retrieval (kept in the graph for audit). The
+        decision to call this belongs to the retrospective policy, not the store."""
+        await self.update_node(skill_id, {"status": "retired"})
+
+    async def get_active_skills(self, role_id: str) -> list[Skill]:
+        """The active skills of a role (role_id = '{workspace}:{name}'), for injection
+        into that role's judgments in that workspace."""
+        return cast(
+            list[Skill],
+            await self.query_nodes("Skill", {"role_id": role_id, "status": "active"}),
+        )
+
+    async def get_skill_support(self, skill_id: str) -> dict:
+        """The skill's visible track record: how many cases corroborate vs refute it.
+        The retirement rule (retrospective policy) reads this; it is not stored as a
+        counter, it is counted from the graph edges on demand."""
+        query = """
+            MATCH (s:Skill {id: $id})
+            RETURN COUNT { (s)-[:CORROBORATED_BY]->(:Case) } AS corroborations,
+                   COUNT { (s)-[:REFUTED_BY]->(:Case) } AS refutations
+        """
+        async with self._driver.session() as session:
+            result = await session.run(query, id=skill_id)
+            record = await result.single()
+        if record is None:
+            return {"corroborations": 0, "refutations": 0}
+        return dict(record)
+
+    async def get_case_applied_skills(self, case_id: str, role_id: str) -> list[str]:
+        """The ids of this role's skills that were APPLIED in this case (APPLIED edges
+        from its work nodes). The deterministic credit-assignment input: these are the
+        skills the case's human feedback corroborates or refutes."""
+        query = """
+            MATCH (n {case_id: $case_id})-[:APPLIED]->(s:Skill {role_id: $role_id})
+            RETURN DISTINCT s.id AS id
+        """
+        async with self._driver.session() as session:
+            result = await session.run(query, case_id=case_id, role_id=role_id)
+            return [record["id"] async for record in result]
+
+    async def get_case_reuse(self, case_id: str) -> int:
+        """How many distinct skills were APPLIED across this case (any role): the reuse
+        signal that attributes an effort drop to learning rather than to luck. A
+        learning read (moves with the learning module when the store is split)."""
+        query = """
+            MATCH (n {case_id: $case_id})-[:APPLIED]->(s:Skill)
+            RETURN count(DISTINCT s) AS reuse
+        """
+        async with self._driver.session() as session:
+            result = await session.run(query, case_id=case_id)
+            record = await result.single()
+        return record["reuse"] if record else 0
 
     async def get_case_cost(self, case_id: str) -> dict:
         """Total spend of a case subgraph, for evaluation: token/call/time sums plus
