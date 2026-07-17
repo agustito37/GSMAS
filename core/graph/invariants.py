@@ -117,9 +117,9 @@ async def check_mandatory_validation(store: GraphStore, case_id: str) -> list[In
 
     Interpretation: the Verdict does not link Evidence by edge (its
     substantive content lives in attributes), so the invariant is operated over
-    the evidence that backs hypotheses. It applies in full to a `confirmed`/
-    `refuted` Verdict; under `inconclusive` there may be unvalidated evidence due
-    to quiescence, so the caller may skip it in that case."""
+    the evidence that backs hypotheses. It applies in full to a `resolved`
+    Verdict; under `unresolved` there may be unvalidated evidence due to
+    quiescence, so the caller may skip it in that case."""
     violations: list[InvariantViolation] = []
 
     for evidence in await store.query_nodes("Evidence", {"case_id": case_id}):

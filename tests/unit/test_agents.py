@@ -185,17 +185,23 @@ async def test_tool_loop_runs_tools_then_returns_final_answer():
 
 
 @pytest.mark.unit
-async def test_tool_loop_is_bounded():
-    """A model that never stops calling tools hits MAX_TOOL_ITERATIONS and raises:
-    the runaway loop becomes a normal agent failure (fail/retry bounds the spend)."""
+async def test_tool_loop_degrades_instead_of_raising():
+    """A model that keeps calling tools does NOT raise: on the final turn the loop
+    withholds the tools, forcing a grounded answer. A runaway loop becomes a normal
+    (possibly empty) result instead of stranding the work and hanging the case."""
     provider = MockProvider(
-        [_tool_call_response("echo", {"text": "otra vez"}) for _ in range(MAX_TOOL_ITERATIONS)]
+        [_tool_call_response("echo", {"text": "otra vez"}) for _ in range(MAX_TOOL_ITERATIONS - 1)]
+        + [LLMResponse(content=json.dumps({"done": False}))]
     )
     agent = _agent(provider)
     registry = ToolRegistry([_EchoTool()])
 
-    with pytest.raises(RuntimeError, match="MAX_TOOL_ITERATIONS"):
-        await run_tool_loop(provider, registry, agent, [{"role": "user", "content": "x"}])
+    response = await run_tool_loop(provider, registry, agent, [{"role": "user", "content": "x"}])
+
+    assert response.content == json.dumps({"done": False})  # it committed to an answer
+    assert provider._calls == MAX_TOOL_ITERATIONS  # used the full budget
+    assert provider.tools_seen[-1] is None  # tools withheld on the last turn
+    assert all(t is not None for t in provider.tools_seen[:-1])  # available before that
 
 
 # ---- run_llm: the agent's LLM capability ----

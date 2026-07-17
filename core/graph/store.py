@@ -79,21 +79,26 @@ class GraphStore:
         return record["id"]
 
     async def ensure_role(self, workspace_id: str, name: str, kind: str = "domain") -> str:
-        """Find-or-create the Role node for (workspace, name), born connected to its
-        Workspace via HAS_ROLE. The role is scoped to the workspace in the graph:
-        id = '{workspace}:{name}', stable across restarts so its skills persist.
-        Idempotent (MERGE). Returns the role_id. Does NOT emit."""
+        """Find-or-create the Role node for (workspace, name) and its LTM (the role's
+        long-term memory container - skills hang off the LTM, not the Role directly, so
+        the memory can later hold more than skills). Born connected: Workspace HAS_ROLE
+        Role HAS_LTM LTM. Scoped to the workspace (id = '{workspace}:{name}'), stable
+        across restarts. Idempotent (MERGE). Returns the role_id. Does NOT emit."""
         role_id = f"{workspace_id}:{name}"
+        ltm_id = f"{role_id}:ltm"
         query = """
             MERGE (w:Workspace {id: $ws})
             MERGE (r:Role {id: $role_id})
               ON CREATE SET r.name = $name, r.kind = $kind, r.workspace_id = $ws
             MERGE (w)-[:HAS_ROLE]->(r)
+            MERGE (m:LTM {id: $ltm_id})
+              ON CREATE SET m.role_id = $role_id
+            MERGE (r)-[:HAS_LTM]->(m)
             RETURN r.id AS id
         """
         async with self._driver.session() as session:
             result = await session.run(
-                query, ws=workspace_id, role_id=role_id, name=name, kind=kind
+                query, ws=workspace_id, role_id=role_id, ltm_id=ltm_id, name=name, kind=kind
             )
             record = await result.single()
         assert record is not None  # MERGE ... RETURN always yields exactly one row
@@ -366,6 +371,9 @@ class GraphStore:
             WITH c LIMIT 1
             MERGE (r:Role {id: c.workspace_id + ':' + $name})
               ON CREATE SET r.name = $name, r.kind = 'domain', r.workspace_id = c.workspace_id
+            MERGE (m:LTM {id: c.workspace_id + ':' + $name + ':ltm'})
+              ON CREATE SET m.role_id = c.workspace_id + ':' + $name
+            MERGE (r)-[:HAS_LTM]->(m)
             MERGE (r)-[:RETROSPECTED]->(c)
             RETURN c
         """
@@ -464,23 +472,48 @@ class GraphStore:
         nodes_query = """
             MATCH (n)
             WHERE n.workspace_id = $ws
+               OR (n:Workspace AND n.id = $ws)
                OR EXISTS { MATCH (c:Case {id: n.case_id, workspace_id: $ws}) }
+               OR (n.role_id IS NOT NULL AND n.role_id STARTS WITH $prefix)
             RETURN labels(n)[0] AS label, properties(n) AS props
         """
         edges_query = """
             MATCH (a)-[r]->(b)
-            WHERE (a.workspace_id = $ws
-                   OR EXISTS { MATCH (ca:Case {id: a.case_id, workspace_id: $ws}) })
-              AND (b.workspace_id = $ws
-                   OR EXISTS { MATCH (cb:Case {id: b.case_id, workspace_id: $ws}) })
+            WHERE (a.workspace_id = $ws OR (a:Workspace AND a.id = $ws)
+                   OR EXISTS { MATCH (ca:Case {id: a.case_id, workspace_id: $ws}) }
+                   OR (a.role_id IS NOT NULL AND a.role_id STARTS WITH $prefix))
+              AND (b.workspace_id = $ws OR (b:Workspace AND b.id = $ws)
+                   OR EXISTS { MATCH (cb:Case {id: b.case_id, workspace_id: $ws}) }
+                   OR (b.role_id IS NOT NULL AND b.role_id STARTS WITH $prefix))
             RETURN a.id AS source, type(r) AS type, b.id AS target
         """
+        prefix = f"{workspace_id}:"
         async with self._driver.session() as session:
-            result = await session.run(nodes_query, ws=workspace_id)
+            result = await session.run(nodes_query, ws=workspace_id, prefix=prefix)
             nodes = [{"label": r["label"], "props": dict(r["props"])} async for r in result]
-            result = await session.run(edges_query, ws=workspace_id)
+            result = await session.run(edges_query, ws=workspace_id, prefix=prefix)
             edges = [dict(r) async for r in result]
         return {"nodes": nodes, "edges": edges}
+
+    async def delete_workspace(self, workspace_id: str) -> int:
+        """Delete a workspace and everything scoped to it: its signals and cases (with the
+        case-scoped nodes), its Role/Skill/learning nodes (role_id-prefixed), and the
+        Workspace node itself. Returns how many nodes were removed. The graph is the
+        source of truth, so this is a genuine wipe of that partition."""
+        query = """
+            MATCH (n)
+            WHERE n.workspace_id = $ws
+               OR (n:Workspace AND n.id = $ws)
+               OR EXISTS { MATCH (c:Case {id: n.case_id, workspace_id: $ws}) }
+               OR (n.role_id IS NOT NULL AND n.role_id STARTS WITH $prefix)
+            WITH n, n.id AS nid
+            DETACH DELETE n
+            RETURN count(nid) AS deleted
+        """
+        async with self._driver.session() as session:
+            result = await session.run(query, ws=workspace_id, prefix=f"{workspace_id}:")
+            record = await result.single()
+        return record["deleted"] if record else 0
 
     async def get_case_map(self, case_id: str) -> dict:
         """A compact skeleton of a case for the retrospective to scan: per node its
@@ -514,14 +547,15 @@ class GraphStore:
         return {"nodes": nodes, "edges": edges}
 
     async def create_skill(self, skill: Skill, case_id: str) -> str:
-        """Create a Skill born connected: HAS_SKILL from its Role (skill.role_id) and
-        CORROBORATED_BY to the Case that first taught it. The (workspace, role) scope
-        is carried by skill.role_id = '{workspace}:{name}'."""
+        """Create a Skill born connected: HAS_SKILL from its role's LTM (the role's
+        long-term memory, created by ensure_role) and CORROBORATED_BY to the Case that
+        first taught it. The (workspace, role) scope is carried by skill.role_id =
+        '{workspace}:{name}'; the LTM is '{role_id}:ltm'."""
         return await self.create_node(
             skill,
             "Skill",
             edges=[
-                EdgeSpec("HAS_SKILL", skill.role_id, direction="in"),
+                EdgeSpec("HAS_SKILL", f"{skill.role_id}:ltm", direction="in"),
                 EdgeSpec("CORROBORATED_BY", case_id, direction="out"),
             ],
         )

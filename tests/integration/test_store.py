@@ -433,8 +433,9 @@ async def test_ensure_role_is_workspace_scoped_and_idempotent(store):
 
 @pytest.mark.integration
 async def test_create_skill_born_connected(store):
-    """A skill is born connected to its Role (HAS_SKILL) and to the Case that taught
-    it (CORROBORATED_BY), carrying the (workspace, role) scope via role_id."""
+    """A skill is born connected to its role's LTM (Role -HAS_LTM-> LTM -HAS_SKILL->
+    Skill) and to the Case that taught it (CORROBORATED_BY), carrying the (workspace,
+    role) scope via role_id."""
     role_id = await store.ensure_role("default", "investigator")
     case = await _open_case(store)
     skill = Skill(
@@ -446,8 +447,11 @@ async def test_create_skill_born_connected(store):
     skill_id = await store.create_skill(skill, case.id)
 
     assert skill.status == "active"
-    of_role = await store.get_neighbors(role_id, "HAS_SKILL", target_label="Skill")
-    assert [s.id for s in of_role] == [skill_id]
+    # ensure_role reified the role's LTM; the skill hangs off it, not off the Role
+    ltm = await store.get_neighbors(role_id, "HAS_LTM", target_label="LTM")
+    assert len(ltm) == 1
+    of_ltm = await store.get_neighbors(ltm[0].id, "HAS_SKILL", target_label="Skill")
+    assert [s.id for s in of_ltm] == [skill_id]
     corroborated = await store.get_neighbors(skill_id, "CORROBORATED_BY", target_label="Case")
     assert [c.id for c in corroborated] == [case.id]
 

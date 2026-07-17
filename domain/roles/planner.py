@@ -36,6 +36,13 @@ class Planner(LearningRole):
 
     name = "planner"
 
+    def learning_focus(self) -> str:
+        return (
+            "plan the investigation steps that test one hypothesis. Distill a PLANNING "
+            "procedure: for a hypothesis like this, which targeted investigation steps "
+            "discriminate it (not how to run them, not how to reach a verdict)."
+        )
+
     def reactions(self) -> list[Reaction]:
         return [Reaction({("node_created", "Hypothesis")}, self._claim_hypothesis, self._plan)]
 

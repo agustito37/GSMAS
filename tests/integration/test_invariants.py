@@ -85,7 +85,7 @@ async def _build_valid_subgraph(store) -> str:
         ],
     )
 
-    verdict = Verdict(kind="confirmed", content="verdict", case_id=case.id)
+    verdict = Verdict(kind="resolved", content="verdict", case_id=case.id)
     await store.create_node(verdict, "Verdict", edges=[EdgeSpec("CONCLUDES", case.id)])
 
     return case.id
@@ -104,7 +104,7 @@ async def test_check_traceability_passes_with_valid_subgraph(store):
 async def test_check_traceability_verdict_not_linked_to_its_case(store, raw):
     case = await _open_case(store)
     # a Verdict with no CONCLUDES edge: injected raw (the API refuses orphans)
-    verdict = Verdict(kind="confirmed", content="verdict", case_id=case.id)
+    verdict = Verdict(kind="resolved", content="verdict", case_id=case.id)
     await _inject(raw, verdict, "Verdict")
 
     violations = await check_traceability(store, case.id)

@@ -1,17 +1,19 @@
 // <workspace-bar> — pick a workspace to view, or create a new one. Switching re-scopes
 // the whole view (the server re-snapshots that workspace).
-import { listWorkspaces, switchWorkspace, getWorkspace } from "../bus.js";
+import { listWorkspaces, switchWorkspace, getWorkspace, deleteWorkspace, log } from "../bus.js";
 
 class WorkspaceBar extends HTMLElement {
   async connectedCallback() {
     this.innerHTML = `
       <select id="ws"></select>
       <input id="newws" placeholder="nuevo workspace..." />
-      <button id="add">+</button>
+      <button id="add" title="crear workspace">+</button>
+      <button id="del" title="eliminar workspace y todos sus nodos">🗑</button>
     `;
     this._sel = this.querySelector("#ws");
     this._sel.addEventListener("change", () => this._switch());
     this.querySelector("#add").addEventListener("click", () => this._create());
+    this.querySelector("#del").addEventListener("click", () => this._delete());
     await this.reload();
   }
 
@@ -45,6 +47,19 @@ class WorkspaceBar extends HTMLElement {
     this._sel.value = name;
     input.value = "";
     this._switch(); // the workspace appears in the graph once a signal is submitted to it
+  }
+
+  async _delete() {
+    const ws = this._sel.value || "default";
+    if (!confirm(`Eliminar el workspace "${ws}" y TODOS sus nodos? No se puede deshacer.`)) return;
+    try {
+      const body = await deleteWorkspace(ws);
+      log(`>> workspace ${ws} eliminado (${body.deleted} nodos)`);
+      await this.reload(); // the deleted workspace is gone from the list -> falls back to default
+      this._switch();
+    } catch (err) {
+      log(">> ERROR eliminando workspace: " + err);
+    }
   }
 }
 

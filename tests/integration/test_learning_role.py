@@ -41,7 +41,7 @@ async def _closed_case(
     await store.create_node(inv, "Investigation", edges=[EdgeSpec("TESTS", hyp.id)])
     ev = Evidence(content="mfa enrolled from a new device", case_id=case.id)
     await store.create_node(ev, "Evidence", edges=[EdgeSpec("PRODUCES", inv.id)])
-    verdict = Verdict(kind="confirmed", content="done", case_id=case.id, feedback=feedback)
+    verdict = Verdict(kind="resolved", content="done", case_id=case.id, feedback=feedback)
     await store.create_node(verdict, "Verdict", edges=[EdgeSpec("CONCLUDES", case.id)])
     return case, inv
 

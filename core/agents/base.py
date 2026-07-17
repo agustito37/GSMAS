@@ -9,7 +9,7 @@ from core.roles.base import ExecuteFn, Executor, Role
 from core.tools.base import ToolRegistry
 
 MAX_ATTEMPTS = 3  # retries of one unit of work before it is marked 'failed' and dropped
-MAX_TOOL_ITERATIONS = 8  # LLM turns per agent run; overflow raises -> fail/retry bounds the spend
+MAX_TOOL_ITERATIONS = 12  # LLM turns per agent run; overflow raises, so fail/retry bounds spend
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -103,13 +103,22 @@ async def run_tool_loop(
     Lives here (not in a separate module) because it mutates the Agent: agent.messages
     is the STM, and every provider call's usage accumulates onto the agent's cost
     counters (so the worker can persist the episode's spend, even on a loop that
-    raises). Tool failures return to the model as text (it adapts); a runaway loop
-    raises at MAX_TOOL_ITERATIONS and becomes a normal agent failure."""
+    raises). Tool failures return to the model as text (it adapts). The loop cannot run
+    away: on the final turn the tools are withheld, so a model that keeps calling them is
+    forced to commit to its answer from what it already gathered. That degrades a runaway
+    loop to a grounded (possibly empty) answer instead of a hard failure, which matters
+    because a stranded unit of work with no result blocks the case's quiescence and the
+    verdict never comes."""
     agent.messages = list(messages)
     specs = tools.specs() if tools else None
-    for _ in range(MAX_TOOL_ITERATIONS):
+    for i in range(MAX_TOOL_ITERATIONS):
+        # withhold the tools on the last allowed turn: the model MUST answer now, so the
+        # loop always terminates with a result rather than raising and stranding the work
+        last_turn = i == MAX_TOOL_ITERATIONS - 1
         response = await provider.complete(
-            agent.messages, tools=specs, response_schema=response_schema
+            agent.messages,
+            tools=None if last_turn else specs,
+            response_schema=response_schema,
         )
         agent.tokens_in += response.usage.get("input_tokens", 0)
         agent.tokens_out += response.usage.get("output_tokens", 0)
@@ -136,4 +145,4 @@ async def run_tool_loop(
                 else f"error: no tools available (requested '{call.name}')"
             )
             agent.messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
-    raise RuntimeError(f"tool loop exceeded MAX_TOOL_ITERATIONS ({MAX_TOOL_ITERATIONS})")
+    return response  # the final turn withheld tools, so it returned a tool-free answer

@@ -11,11 +11,14 @@ RETIRE_MIN_CASES = 3  # a skill is only eligible to retire after this many feedb
 
 _RETRO_PROMPT = (
     "You are the retrospective of the '{role}' role, reviewing a case that just closed "
-    "and whose verdict received human feedback (see the outcome). From the case map "
-    "(each node with its effort), the outcome, and your current skills (some marked as "
-    "APPLIED in this case), distill what a REUSABLE PROCEDURE tells your role's future "
-    "work. Use get_node to read the nodes that matter. Be conservative: only a clear, "
-    "generalizable lesson.\n"
+    "and whose verdict received human feedback (see the outcome).\n"
+    "YOUR ROLE'S JOB: {focus}\n"
+    "Distill a REUSABLE PROCEDURE for YOUR role's future work; stay STRICTLY within your "
+    "role's job above. Do NOT distill another role's procedure: e.g. if your job is to "
+    "plan, to hypothesize, or to weigh a verdict, do NOT describe how to query the logs "
+    "(that is the investigator's job). From the case map (each node with its effort), the "
+    "outcome, and your current skills (some marked as APPLIED in this case), use get_node "
+    "to read the nodes that matter. Be conservative: only a clear, generalizable lesson.\n"
     "- If the verdict was CORRECT: distill the effective procedure ('create' a new one, "
     "or 'refine' an existing one to sharpen it).\n"
     "- If the verdict was WRONG: you have the richest signal. Diagnose what went wrong "
@@ -46,8 +49,10 @@ class _Distillation(BaseModel):
     changes: list[_Change]
 
 
-async def retrospect(role: Role, agent: Executor) -> None:
-    """The reflection that writes skills. Two separate parts: a deterministic vitality
+async def retrospect(role: Role, agent: Executor, focus: str) -> None:
+    """The reflection that writes skills, scoped to the role's `focus` (its function, so
+    each role distills ITS procedure, not a generic one). Two separate parts: a
+    deterministic vitality
     update (corroborate/refute the skills this case APPLIED, gated by human feedback,
     the threshold deciding retire-vs-refine), and an LLM distillation (create/refine,
     on success and failure alike). Uses agent.run_llm DIRECTLY, not role.reason: it
@@ -65,7 +70,7 @@ async def retrospect(role: Role, agent: Executor) -> None:
     case_map = await role.store.get_case_map(case.id)
     tools = (agent.tools or ToolRegistry([])).with_tool(GraphReadTool(role.store))
     distill = await agent.run_llm(
-        system=_RETRO_PROMPT.format(role=role.name),
+        system=_RETRO_PROMPT.format(role=role.name, focus=focus),
         user=_format_input(case_map, verdict, skills, applied),
         schema=_Distillation,
         tools=tools,

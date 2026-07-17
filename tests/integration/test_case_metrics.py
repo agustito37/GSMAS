@@ -36,7 +36,7 @@ async def test_case_metrics_counts_effort_reuse_and_outcome(store):
     await store.mark_skill_applied(inv1.id, skill_id)
     await store.mark_skill_applied(inv2.id, skill_id)  # same skill twice -> reuse stays 1
 
-    verdict = Verdict(kind="confirmed", content="malicious", case_id=case.id, feedback="correct")
+    verdict = Verdict(kind="resolved", content="malicious", case_id=case.id, feedback="correct")
     await store.create_node(verdict, "Verdict", edges=[EdgeSpec("CONCLUDES", case.id)])
 
     metrics = await case_metrics(store, case.id)
@@ -44,7 +44,7 @@ async def test_case_metrics_counts_effort_reuse_and_outcome(store):
     assert metrics.hypotheses == 2
     assert metrics.investigations == 3
     assert metrics.reuse == 1  # distinct skills, not APPLIED edges
-    assert metrics.verdict_kind == "confirmed"
+    assert metrics.verdict_kind == "resolved"
     assert metrics.feedback == "correct"
 
 

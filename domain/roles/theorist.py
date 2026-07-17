@@ -10,7 +10,7 @@ from core.roles.base import Executor, Reaction
 
 logger = logging.getLogger("haive.theorist")
 
-BRANCH_LIMIT = 4  # max hypotheses per branch (root_id); the generation hard stop
+BRANCH_LIMIT = 3  # max hypotheses per branch (root_id); the generation hard stop
 TRIAGE_MAX_ATTEMPTS = 3  # failed judgments on one Evidence before giving up on it
 
 _OPEN_PROMPT = (
@@ -25,12 +25,23 @@ _TRIAGE_PROMPT = (
     "You maintain the hypothesis space of an open investigation. You receive the "
     "case objective, every existing hypothesis (id, status, description) and ONE new "
     "piece of evidence. Judge conservatively:\n"
-    "(1) new_hypotheses: ONLY if the evidence reveals a plausible explanation that "
-    "no existing hypothesis (of any status) substantially covers, propose it, with "
-    "a brief rationale (why the evidence suggests it). Generating is the exception: "
-    "most evidence just supports or weakens existing hypotheses - then return [].\n"
-    "(2) refuted: ONLY if this evidence conclusively contradicts an ACTIVE "
-    "hypothesis, list its id with the rationale. If in doubt, do not refute.\n"
+    "(1) new_hypotheses: DEFAULT to []. Before proposing anything, compare each "
+    "candidate against EVERY hypothesis already listed: if any of them expresses the "
+    "same idea, even in different words (e.g. 'account compromised', 'unauthorized "
+    "access', 'account takeover' are the SAME hypothesis), do NOT propose it. Only a "
+    "genuinely DISTINCT explanation the list does not already cover, with a brief "
+    "rationale. Most evidence just supports or weakens existing hypotheses; then "
+    "return []. Never restate a hypothesis that is already there.\n"
+    "(2) refuted: refuting STOPS all work on a hypothesis, so use it only to drop a "
+    "line you can already prove impossible. Refute an ACTIVE hypothesis ONLY on a "
+    "DIRECT FACTUAL CONTRADICTION: the hypothesis asserts X and the evidence proves "
+    "NOT X (e.g. hypothesis 'the login came from Belarus', evidence 'the session "
+    "actually originated in Madrid'). These do NOT refute: evidence that merely fails "
+    "to confirm; an alternative that is also plausible; or a subject DENYING an "
+    "action, because a user denying a password change or MFA enrollment they did not "
+    "make SUPPORTS compromise, it does not refute it. Absence of proof is not "
+    "contradiction. When in doubt, leave the hypothesis ACTIVE; the final call is made "
+    "when the case is weighed as a whole.\n"
     "Reason only from the given content."
 )
 
@@ -68,6 +79,14 @@ class Theorist(LearningRole):
     triage procedures accumulate as skills."""
 
     name = "theorist"
+
+    def learning_focus(self) -> str:
+        return (
+            "form the differential: the initial hypotheses from a signal, and new ones "
+            "suggested by evidence. Distill a HYPOTHESIZING procedure: for signals/evidence "
+            "like this, which candidate explanations to form or drop (not how to "
+            "investigate or conclude them)."
+        )
 
     def __init__(self, store) -> None:
         super().__init__(store)
@@ -206,7 +225,7 @@ class Theorist(LearningRole):
     async def on_failure(self, work: NodeBase) -> None:
         """Triage recovery (first real user of this hook). Frees the in-flight slot
         so a later event retries the judgment; after TRIAGE_MAX_ATTEMPTS, gives up
-        and marks the Evidence triaged anyway - conservative: the case can close, a
+        and marks the Evidence triaged anyway (conservative): the case can close, a
         missed generation is acceptable, a hung case is not."""
         if not isinstance(work, Evidence):
             return

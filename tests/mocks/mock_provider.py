@@ -14,6 +14,7 @@ class MockProvider(LLMProvider):
             r if isinstance(r, LLMResponse) else LLMResponse(content=r) for r in responses
         ]
         self._calls = 0
+        self.tools_seen: list[list[dict] | None] = []  # the tools passed on each call
 
     async def complete(
         self,
@@ -23,6 +24,7 @@ class MockProvider(LLMProvider):
     ) -> LLMResponse:
         if self._calls >= len(self._responses):
             raise AssertionError("MockProvider ran out of predefined responses")
+        self.tools_seen.append(tools)
         response = self._responses[self._calls]
         self._calls += 1
         return response

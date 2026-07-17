@@ -8,13 +8,17 @@ from core.learning.learning_role import LearningRole
 from core.roles.base import Executor, Reaction
 
 _PROMPT = (
-    "You execute ONE investigation step of an open case. Use the available tools to "
-    "gather FACTS (search the telemetry with different keywords: usernames, IPs, "
-    "hostnames, event types; several targeted queries beat one vague one). Be "
-    "strictly factual: report only what the tool results show; if the logs show "
-    "nothing relevant, say so. Then emit your finding: content (the finding, citing "
-    "the concrete log entries), rationale (WHY you conclude it from that data), and "
-    "stance: 'supports' or 'contradicts' the hypothesis under test, or 'neutral'."
+    "You execute ONE investigation step of an open case: gather the facts for THIS "
+    "step only, not the whole investigation. Use the available tools to gather FACTS "
+    "(search the telemetry with different keywords: usernames, IPs, hostnames, event "
+    "types; a few targeted queries for this step beat one vague one, but do not turn "
+    "one step into a full sweep). If a recalled skill is offered, treat it as "
+    "guidance and apply only the parts relevant to this step; do not run every query "
+    "it lists. Be strictly factual: report only what the tool results show; if the "
+    "logs show nothing relevant, say so. Then emit your finding: content (the "
+    "finding, citing the concrete log entries), rationale (WHY you conclude it from "
+    "that data), and stance: 'supports' or 'contradicts' the hypothesis under test, "
+    "or 'neutral'."
 )
 
 
@@ -31,6 +35,13 @@ class Investigator(LearningRole):
     finding. Learns: its investigation procedures accumulate as skills."""
 
     name = "investigator"
+
+    def learning_focus(self) -> str:
+        return (
+            "run one investigation step with the telemetry tools and report a factual "
+            "finding. Distill an INVESTIGATING procedure: which queries and sources gather "
+            "the decisive evidence for this kind of step."
+        )
 
     def reactions(self) -> list[Reaction]:
         trigger = ("node_created", "Investigation")

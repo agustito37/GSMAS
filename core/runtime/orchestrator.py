@@ -4,7 +4,7 @@ import logging
 from core.agents.base import MAX_ATTEMPTS, Agent
 from core.events.bus import Event, EventBus
 from core.graph.models import InputSignal
-from core.graph.store import GraphStore
+from core.graph.store import EdgeSpec, GraphStore
 from core.providers.base import LLMProvider
 from core.roles.base import Reaction, Role
 from core.runtime.swarm import Swarm
@@ -104,8 +104,16 @@ class Orchestrator:
         step; opening the Case is the Theorist's decision (a registered role). The
         workspace scopes all learning of the case this signal opens."""
         await self._store.ensure_workspace(workspace_id)
+        # reify the registered roles (and their LTMs) in this workspace so the whole
+        # cast is visible from the start, before any learning has happened
+        for role in self._roles:
+            await self._store.ensure_role(workspace_id, role.name, role.kind)
         signal = InputSignal(raw_content=raw_content, workspace_id=workspace_id)
-        await self._store.create_node(signal, "InputSignal")
+        # born connected to its Workspace, so the whole graph is one tree (the
+        # investigation + the roles/LTMs) rooted at the Workspace, not two islands
+        await self._store.create_node(
+            signal, "InputSignal", edges=[EdgeSpec("HAS_SIGNAL", workspace_id, direction="in")]
+        )
         return signal.id
 
     async def wait_for_closure(self, case_id: str) -> None:

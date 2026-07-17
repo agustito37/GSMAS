@@ -96,7 +96,7 @@ async def test_wait_for_closure_returns_if_verdict_already_exists(orchestrator):
     could have appeared before subscribing), the check-then-wait finds it and returns
     at once instead of hanging."""
     case = await _open_case(orchestrator.store)
-    verdict = Verdict(case_id=case.id, kind="confirmed", content="done")
+    verdict = Verdict(case_id=case.id, kind="resolved", content="done")
     await orchestrator.store.create_node(verdict, "Verdict", edges=[EdgeSpec("CONCLUDES", case.id)])
 
     # must return promptly; without check-then-wait this would hang (event already passed)
@@ -110,7 +110,7 @@ async def test_wait_for_closure_completes_when_verdict_appears_after(orchestrato
     case = await _open_case(orchestrator.store)
     waiter = asyncio.create_task(orchestrator.wait_for_closure(case.id))
 
-    verdict = Verdict(case_id=case.id, kind="refuted", content="done")
+    verdict = Verdict(case_id=case.id, kind="unresolved", content="done")
     await orchestrator.store.create_node(verdict, "Verdict", edges=[EdgeSpec("CONCLUDES", case.id)])
 
     await asyncio.wait_for(waiter, timeout=5)  # must complete

@@ -46,12 +46,13 @@ _NEUTRAL_FINDING = json.dumps(
 )
 
 # the Synthesizer weighs the (neutral) evidence and reasons the verdict; both
-# investigations returned nothing, so 'inconclusive' is the grounded call
+# investigations returned nothing, so 'unresolved' is the grounded call
 _VERDICT_OUTPUT = json.dumps(
     {
-        "kind": "inconclusive",
+        "kind": "unresolved",
         "content": "no telemetry was available to settle the case",
         "rationale": "both investigations returned neutral findings",
+        "dispositions": [],  # an unresolved case confirms nothing
     }
 )
 

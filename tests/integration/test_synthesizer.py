@@ -41,9 +41,13 @@ async def test_synthesizer_reasons_the_verdict_from_evidence_and_closes(store):
     )
 
     verdict_out = json.dumps({
-        "kind": "confirmed",
+        "kind": "resolved",
         "content": "credential theft confirmed: anomalous geo-login for jdoe",
         "rationale": "the Belarus login contradicts the user's normal Argentina location",
+        "dispositions": [
+            {"hypothesis_id": hyp.id, "status": "confirmed",
+             "reason": "the verdict rests on this hypothesis"},
+        ],
     })
     synthesizer = Synthesizer(store)
     reaction = synthesizer.reactions()[0]
@@ -62,8 +66,11 @@ async def test_synthesizer_reasons_the_verdict_from_evidence_and_closes(store):
     verdicts = await store.get_neighbors(case.id, "CONCLUDES", target_label="Verdict")
     assert len(verdicts) == 1
     verdict = verdicts[0]
-    assert verdict.kind == "confirmed"
+    assert verdict.kind == "resolved"
     assert "credential theft" in verdict.content
     assert verdict.rationale != ""
     closed = await store.get_node(case.id)
     assert closed is not None and closed.status == "closed"
+    # the winning hypothesis was confirmed, so the structure matches the verdict
+    confirmed_hyp = await store.get_node(hyp.id)
+    assert confirmed_hyp is not None and confirmed_hyp.status == "confirmed"

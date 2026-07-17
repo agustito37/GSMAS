@@ -92,9 +92,9 @@ class Evidence(CaseNode, Measured):
 
 
 class Verdict(CaseNode):
-    kind: Literal["confirmed", "refuted", "inconclusive"]
-    content: str
-    rationale: str = ""  # how the evidence was weighed to reach this kind
+    kind: Literal["resolved", "unresolved"]  # did the investigation reach an answer?
+    content: str  # the answer itself (what was concluded; domain-specific)
+    rationale: str = ""  # how the evidence was weighed to reach it
     feedback: Literal["correct", "incorrect", "partial"] | None = None
 
 

@@ -1,5 +1,5 @@
 // <signal-form> — submit an InputSignal into the currently selected workspace.
-import { submitSignal, getWorkspace, log } from "../bus.js";
+import { submitSignal, switchWorkspace, getWorkspace, log } from "../bus.js";
 
 class SignalForm extends HTMLElement {
   connectedCallback() {
@@ -21,6 +21,7 @@ class SignalForm extends HTMLElement {
       const body = await submitSignal(content);
       log(`>> senal enviada a ${getWorkspace()} (${(body.id || "?").slice(0, 8)}) - investigando...`);
       this._input.value = "";
+      switchWorkspace(getWorkspace()); // re-snapshot: pull in the just-reified roles/LTMs
     } catch (err) {
       log(">> ERROR enviando la senal: " + err);
     }

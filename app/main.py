@@ -72,11 +72,15 @@ class EventStream:
                 self.clients.pop(ws, None)
 
     async def _node_workspace(self, node: NodeBase) -> str:
-        """The workspace a node belongs to: directly (InputSignal/Case/Role) or via its
-        case (the case-scoped nodes)."""
+        """The workspace a node belongs to: directly (InputSignal/Case/Role), via its
+        role_id prefix (Skill/LTM: '{workspace}:{name}[...]'), or via its case (the
+        case-scoped nodes)."""
         workspace = getattr(node, "workspace_id", None)
         if workspace:
             return workspace
+        role_id = getattr(node, "role_id", None)
+        if role_id and ":" in role_id:
+            return role_id.split(":", 1)[0]
         case_id = getattr(node, "case_id", None)
         if case_id and self.orchestrator:
             cases = await self.orchestrator.store.query_nodes("Case", {"case_id": case_id})
@@ -112,6 +116,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+@app.middleware("http")
+async def no_store(request, call_next):
+    # dev dashboard with reload=True: never cache, so a refresh always serves fresh
+    # HTML/JS (avoids stale-module confusion). Does not touch the WebSocket.
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(os.path.join(WEB_DIR, "index.html"))
@@ -123,6 +136,14 @@ async def list_workspaces() -> dict:
     nodes = await app.state.orchestrator.store.query_nodes("Workspace", {})
     ids = sorted({n.id for n in nodes} | {"default"})
     return {"workspaces": ids}
+
+
+@app.delete("/workspaces/{workspace_id}")
+async def delete_workspace(workspace_id: str) -> dict:
+    """Delete a workspace and all its nodes (the dashboard's control confirms first)."""
+    deleted = await app.state.orchestrator.store.delete_workspace(workspace_id)
+    logger.info("workspace %s deleted (%d nodes)", workspace_id, deleted)
+    return {"deleted": deleted}
 
 
 @app.post("/signal")

@@ -20,13 +20,17 @@ class Tool(ABC):
         dispatches dynamically via run(**arguments)."""
 
     def spec(self) -> dict:
-        # OpenAI function-calling format (providers adapt it if they need another)
+        # OpenAI function-calling format. strict=True so the tool can be offered
+        # ALONGSIDE structured outputs (the .parse() path rejects non-strict tools);
+        # strict requires additionalProperties=false and every property listed in
+        # `required` (all tools here declare their params required).
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
+                "strict": True,
+                "parameters": {**self.parameters, "additionalProperties": False},
             },
         }
 

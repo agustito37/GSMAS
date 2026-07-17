@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from typing import TypeVar
 
 from pydantic import BaseModel
@@ -18,6 +19,13 @@ class LearningRole(Role):
     step). A role either learns (subclasses this) or it does not (subclasses Role);
     both behaviors follow from this one class. It IS a Role, not a mixin: store / name
     / reactions come from Role."""
+
+    @abstractmethod
+    def learning_focus(self) -> str:
+        """This role's function, what its retrospective distills FOR. Every LearningRole
+        MUST declare it, so a role never learns generically (the role-blind failure): the
+        Theorist hypothesizes, the Planner plans, the Synthesizer weighs the verdict, the
+        Investigator investigates. Injected into the retrospective's prompt."""
 
     async def reason(self, agent: Executor, *, system: str, user: str, schema: type[T]) -> T:
         """This role's judgment WITH its learned skills: recall them (by role, at this
@@ -57,4 +65,4 @@ class LearningRole(Role):
         return await self.store.claim_case_for_retrospection(self.name)
 
     async def _retrospect(self, agent: Executor) -> None:
-        await retrospect(self, agent)
+        await retrospect(self, agent, self.learning_focus())
