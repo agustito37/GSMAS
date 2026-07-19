@@ -6,9 +6,9 @@ class WorkspaceBar extends HTMLElement {
   async connectedCallback() {
     this.innerHTML = `
       <select id="ws"></select>
-      <input id="newws" placeholder="nuevo workspace..." />
-      <button id="add" title="crear workspace">+</button>
-      <button id="del" title="eliminar workspace y todos sus nodos">🗑</button>
+      <input id="newws" placeholder="new workspace..." />
+      <button id="add" title="create workspace">+</button>
+      <button id="del" title="delete workspace and all its nodes">🗑</button>
     `;
     this._sel = this.querySelector("#ws");
     this._sel.addEventListener("change", () => this._switch());
@@ -51,10 +51,10 @@ class WorkspaceBar extends HTMLElement {
 
   async _delete() {
     const ws = this._sel.value || "default";
-    if (!confirm(`Eliminar el workspace "${ws}" y TODOS sus nodos? No se puede deshacer.`)) return;
+    if (!confirm(`Delete workspace "${ws}" and ALL its nodes? This cannot be undone.`)) return;
     try {
       const body = await deleteWorkspace(ws);
-      log(`>> workspace ${ws} eliminado (${body.deleted} nodos)`);
+      log(`>> workspace ${ws} deleted (${body.deleted} nodes)`);
       await this.reload(); // the deleted workspace is gone from the list -> falls back to default
       this._switch();
     } catch (err) {

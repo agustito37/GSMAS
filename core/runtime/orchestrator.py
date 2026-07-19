@@ -33,7 +33,7 @@ class Orchestrator:
         self._store = GraphStore(
             neo4j_uri, neo4j_user, neo4j_password, on_mutation=self._on_mutation
         )
-        self._swarm = Swarm(max_agents)
+        self._swarm = Swarm(max_agents, on_agent_event=self._on_agent_event)
         self._roles: list[Role] = []
         self._providers: dict[Role, LLMProvider | None] = {}
         self._tools = tools
@@ -43,6 +43,22 @@ class Orchestrator:
     ) -> None:
         self._bus.publish(
             Event(type=event_type, node_id=node_id, node_type=node_type, payload=payload)
+        )
+
+    def _on_agent_event(
+        self, phase: str, role: str, action: str, work_id: str, work_type: str
+    ) -> None:
+        """Republish a swarm agent transition onto the bus (observers only; no work
+        node is mutated). node_id is the work unit, so the dashboard can scope it to a
+        workspace and label it, exactly like a mutation event; `action` says what the
+        agent is doing (investigate, retrospect, ...)."""
+        self._bus.publish(
+            Event(
+                type=f"agent_{phase}",
+                node_id=work_id,
+                node_type=work_type,
+                payload={"role": role, "action": action},
+            )
         )
 
     @property
@@ -101,7 +117,7 @@ class Orchestrator:
     # ---- lifecycle ----
     async def submit_signal(self, raw_content: str, workspace_id: str = "default") -> str:
         """Materialize an InputSignal in a workspace and return its id. The ONLY intake
-        step; opening the Case is the Theorist's decision (a registered role). The
+        step; opening the Case is the Proposer's decision (a registered role). The
         workspace scopes all learning of the case this signal opens."""
         await self._store.ensure_workspace(workspace_id)
         # reify the registered roles (and their LTMs) in this workspace so the whole

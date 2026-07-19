@@ -344,7 +344,7 @@ async def test_recover_claimed_ignores_non_claimed(store):
 async def test_record_cost_accumulates_and_does_not_emit(store, neo4j_container):
     """record_cost adds up across calls (retries) and, crucially, emits NO event:
     it is evaluation bookkeeping, not a domain mutation (an event would wake
-    reactions like the Synthesizer). Verified with a capturing store."""
+    reactions like the Aggregator). Verified with a capturing store."""
     events: list = []
     uri = neo4j_container.get_connection_url()
     auth = (neo4j_container.username, neo4j_container.password)
@@ -416,16 +416,16 @@ async def test_ensure_role_is_workspace_scoped_and_idempotent(store):
     """A Role is a node per (workspace, name), born connected to its Workspace by
     HAS_ROLE, with a stable id; the SAME role name in a different workspace is a
     DISTINCT node (so their skills never cross)."""
-    a = await store.ensure_role("exp1", "theorist")
-    again = await store.ensure_role("exp1", "theorist")
-    b = await store.ensure_role("exp2", "theorist")
+    a = await store.ensure_role("exp1", "proposer")
+    again = await store.ensure_role("exp1", "proposer")
+    b = await store.ensure_role("exp2", "proposer")
 
-    assert a == "exp1:theorist" and again == "exp1:theorist"
-    assert b == "exp2:theorist"  # same name, different workspace -> different node
+    assert a == "exp1:proposer" and again == "exp1:proposer"
+    assert b == "exp2:proposer"  # same name, different workspace -> different node
     roles = await store.query_nodes("Role", {})
-    assert {r.id for r in roles} == {"exp1:theorist", "exp2:theorist"}
+    assert {r.id for r in roles} == {"exp1:proposer", "exp2:proposer"}
     under_exp1 = await store.get_neighbors("exp1", "HAS_ROLE", target_label="Role")
-    assert [r.id for r in under_exp1] == ["exp1:theorist"]
+    assert [r.id for r in under_exp1] == ["exp1:proposer"]
 
 
 # ---------- skills ----------

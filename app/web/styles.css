@@ -21,8 +21,36 @@ graph-view {
 /* custom elements are inline by default; the sidebar widgets need to be blocks */
 node-detail,
 feedback-panel,
+agent-activity,
 event-log {
   display: block;
+}
+
+/* live agent tracing: one pill per running agent, coloured by role */
+.agent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  border-bottom: 1px solid #eee;
+}
+.role-badge {
+  color: #fff;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.agent-work {
+  color: #444;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-idle {
+  color: #aaa;
+  padding: 3px 0;
 }
 
 workspace-bar {

@@ -261,7 +261,7 @@ class GraphStore:
         """Record a failed attempt: increment `attempts`; back to 'pending' (retry)
         or, at max_attempts, 'failed' (terminal, never reclaimed). Emits node_updated
         ONLY when the node goes terminal: a retry is internal bookkeeping, a terminal
-        failure is an outcome other roles react to (e.g. the Synthesizer closing a
+        failure is an outcome other roles react to (e.g. the Aggregator closing a
         case whose last line failed). Returns the new state."""
         query = """
             MATCH (n {id: $id})
@@ -291,7 +291,7 @@ class GraphStore:
         """Accumulate one episode's cost onto its work node. Atomic increment (no
         read-modify-write race; retries add up). Does NOT emit: this is evaluation
         bookkeeping, not a domain mutation - emitting node_updated would spuriously
-        wake reactions (e.g. the Synthesizer on node_updated/Investigation)."""
+        wake reactions (e.g. the Aggregator on node_updated/Investigation)."""
         query = """
             MATCH (n {id: $id})
             SET n.tokens_in  = coalesce(n.tokens_in, 0)  + $tokens_in,
@@ -327,7 +327,7 @@ class GraphStore:
             record = await result.single()
         return record["recovered"] if record else 0
 
-    async def claim_case_for_synthesis(self) -> Case | None:
+    async def claim_quiescent_case(self) -> Case | None:
         query = """
             MATCH (c:Case {claim_state: 'pending'})
             WHERE NOT (c)-[:CONCLUDES]->(:Verdict)
@@ -409,20 +409,22 @@ class GraphStore:
         return record is not None
 
     async def create_suggested_hypothesis(
-        self, hypothesis: Hypothesis, evidence_id: str, max_per_branch: int
+        self, hypothesis: Hypothesis, evidence_id: str, max_per_branch: int, max_per_case: int
     ) -> bool:
         """Create a GENERATED hypothesis, born connected (DERIVES from its Case and
-        SUGGESTS from the evidence that inspired it), ONLY if its branch has room:
-        the count and the create happen in one statement under the claim lock, so
-        concurrent generations cannot exceed the cap. Counts every hypothesis of the
-        branch INCLUDING refuted ones (exploring a dead line still spends budget).
-        Returns False if the cap was hit (nothing created)."""
+        SUGGESTS from the evidence that inspired it), ONLY if both caps have room: its
+        branch (max_per_branch) AND its case total (max_per_case). Both counts and the
+        create happen in one statement under the claim lock, so concurrent generations
+        cannot exceed either cap (no check-then-act race). Counts every hypothesis
+        INCLUDING refuted ones (exploring a dead line still spends budget). Returns False
+        if either cap was hit (nothing created)."""
         props = hypothesis.model_dump(mode="json")
         query = """
             MATCH (c:Case {id: $case_id}), (e:Evidence {id: $evidence_id})
-            OPTIONAL MATCH (b:Hypothesis {root_id: $root_id})
-            WITH c, e, count(b) AS branch
-            WHERE branch < $max
+            WITH c, e,
+                 COUNT { (b:Hypothesis {root_id: $root_id}) } AS branch,
+                 COUNT { (t:Hypothesis {case_id: $case_id}) } AS total
+            WHERE branch < $max_branch AND total < $max_case
             CREATE (h:Hypothesis $props)
             CREATE (c)-[:DERIVES]->(h)
             CREATE (e)-[:SUGGESTS]->(h)
@@ -434,7 +436,8 @@ class GraphStore:
                 case_id=hypothesis.case_id,
                 evidence_id=evidence_id,
                 root_id=hypothesis.root_id,
-                max=max_per_branch,
+                max_branch=max_per_branch,
+                max_case=max_per_case,
                 props=props,
             )
             record = await result.single()

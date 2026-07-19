@@ -24,7 +24,7 @@ class LearningRole(Role):
     def learning_focus(self) -> str:
         """This role's function, what its retrospective distills FOR. Every LearningRole
         MUST declare it, so a role never learns generically (the role-blind failure): the
-        Theorist hypothesizes, the Planner plans, the Synthesizer weighs the verdict, the
+        Proposer hypothesizes, the Planner plans, the Aggregator concludes the verdict, the
         Investigator investigates. Injected into the retrospective's prompt."""
 
     async def reason(self, agent: Executor, *, system: str, user: str, schema: type[T]) -> T:

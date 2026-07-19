@@ -1,5 +1,6 @@
-"""Integration tests for the Theorist: reaction 1 (open the case) and reaction 2
-(the generative motor: triage each Evidence -> suggest / refute / nothing).
+"""Integration tests for the Proposer: reaction 1 (open the case) and reaction 2
+(the generative motor: triage each Evidence -> suggest a new hypothesis or nothing).
+The Proposer is purely generative; it does not refute (that is the Investigator's call).
 
     uv run pytest -m integration
 """
@@ -12,7 +13,7 @@ from core.agents.base import Agent
 from core.graph.models import Case, Evidence, Hypothesis, InputSignal, Investigation
 from core.graph.store import EdgeSpec
 from core.providers.base import LLMResponse
-from domain.roles.theorist import Theorist
+from domain.roles.proposer import Proposer
 from tests.mocks.mock_provider import MockProvider
 
 
@@ -41,15 +42,15 @@ async def _seed_case(store):
 async def _run_triage(store, provider) -> None:
     """Simulate the orchestrator for reaction 2: claim the evidence, spawn an agent
     stamped with the engine, run it."""
-    theorist = Theorist(store)
-    work = await theorist._claim_evidence()
+    proposer = Proposer(store)
+    work = await proposer._claim_evidence()
     assert work is not None
-    await Agent(theorist, theorist.reactions()[1].execute, work, provider=provider).run()
+    await Agent(proposer, proposer.reactions()[1].execute, work, provider=provider).run()
 
 
 @pytest.mark.integration
-async def test_theorist_opens_case_and_derives_hypotheses(store):
-    """Given a signal, the Theorist opens a Case (linked by OPENS) with the LLM's
+async def test_proposer_opens_case_and_derives_hypotheses(store):
+    """Given a signal, the Proposer opens a Case (linked by OPENS) with the LLM's
     objective, and derives the hypotheses (linked by DERIVES), each carrying its
     rationale (the framework rule: every LLM emission persists its why)."""
     provider = MockProvider([LLMResponse(content=json.dumps({
@@ -60,15 +61,15 @@ async def test_theorist_opens_case_and_derives_hypotheses(store):
             {"description": "legitimate travel", "rationale": "user may be abroad"},
         ],
     }))])
-    theorist = Theorist(store)
+    proposer = Proposer(store)
 
     signal = InputSignal(raw_content="suspicious login from a new country")
     await store.create_node(signal, "InputSignal")
 
     # simulate the orchestrator: claim the work, then run an engine-stamped agent
-    work = await theorist._claim_signal()
+    work = await proposer._claim_signal()
     assert work is not None
-    await Agent(theorist, theorist.reactions()[0].execute, work, provider=provider).run()
+    await Agent(proposer, proposer.reactions()[0].execute, work, provider=provider).run()
 
     cases = await store.query_nodes("Case", {})
     assert len(cases) == 1
@@ -92,7 +93,7 @@ async def test_theorist_opens_case_and_derives_hypotheses(store):
 
 @pytest.mark.integration
 async def test_triage_generates_a_suggested_hypothesis(store):
-    """Evidence whose finding reveals something new: the Theorist derives a NEW
+    """Evidence whose finding reveals something new: the Proposer derives a NEW
     hypothesis, born connected (DERIVES from the Case, SUGGESTS from the evidence),
     inheriting the parent's branch, claimable by the Planner; the evidence ends up
     triaged."""
@@ -101,7 +102,6 @@ async def test_triage_generates_a_suggested_hypothesis(store):
         "new_hypotheses": [
             {"description": "lateral movement", "rationale": "unexpected internal access"}
         ],
-        "refuted": [],
     }))])
 
     await _run_triage(store, provider)
@@ -124,35 +124,6 @@ async def test_triage_generates_a_suggested_hypothesis(store):
 
 
 @pytest.mark.integration
-async def test_triage_refutes_and_skips_pending_work(store):
-    """Evidence that conclusively contradicts a hypothesis: the Theorist marks it
-    refuted (recording the judgment) and its not-yet-claimed investigations are
-    skipped, terminally (no one can claim them anymore)."""
-    case, hypothesis, _, evidence = await _seed_case(store)
-    pending = Investigation(description="interview the user", case_id=case.id)
-    await store.create_node(pending, "Investigation", edges=[EdgeSpec("TESTS", hypothesis.id)])
-    provider = MockProvider([LLMResponse(content=json.dumps({
-        "new_hypotheses": [],
-        "refuted": [
-            {"hypothesis_id": hypothesis.id, "rationale": "the login was confirmed legitimate"}
-        ],
-    }))])
-
-    await _run_triage(store, provider)
-
-    refuted = await store.get_node(hypothesis.id)
-    assert refuted is not None
-    assert refuted.status == "refuted"
-    assert refuted.refutation_reason == "the login was confirmed legitimate"
-
-    skipped = await store.get_node(pending.id)
-    assert skipped is not None
-    assert skipped.status == "skipped"
-    assert "hypothesis refuted" in skipped.skip_reason
-    assert skipped.claim_state == "done"  # not claimable: the line stopped consuming work
-
-
-@pytest.mark.integration
 async def test_triage_respects_the_branch_limit(store):
     """A full branch (4 hypotheses sharing the root) rejects further generation: the
     count-and-create is atomic, so the suggested hypothesis is NOT created - but the
@@ -165,7 +136,6 @@ async def test_triage_respects_the_branch_limit(store):
         await store.create_node(sibling, "Hypothesis", edges=[EdgeSpec("DERIVES", case.id)])
     provider = MockProvider([LLMResponse(content=json.dumps({
         "new_hypotheses": [{"description": "one too many", "rationale": "x"}],
-        "refuted": [],
     }))])
 
     await _run_triage(store, provider)

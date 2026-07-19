@@ -47,6 +47,7 @@ async def test_investigator_searches_logs_and_produces_judged_evidence(store):
             "content": "auth logs show a login for jdoe from Belarus at 03:14 UTC",
             "rationale": "the telemetry contains the anomalous login entry",
             "stance": "supports",
+            "disposition": "open",
         })),
     ])
     tools = ToolRegistry([LogQueryTool("data/telemetry.jsonl")])
@@ -73,6 +74,10 @@ async def test_investigator_searches_logs_and_produces_judged_evidence(store):
     assert evidence.rationale != ""
     supporting = await store.get_supporting_evidence(hypothesis.id)
     assert [e.id for e in supporting] == [evidence.id]
+    # a supporting finding does NOT confirm: the investigator only refutes locally, so
+    # the hypothesis stays active (the winner is crowned at case close)
+    still_open = await store.get_node(hypothesis.id)
+    assert still_open is not None and still_open.status == "active"
 
 
 @pytest.mark.integration
@@ -85,6 +90,7 @@ async def test_investigator_neutral_finding_creates_no_stance_edge(store):
             "content": "no relevant entries found",
             "rationale": "the logs show nothing about this hypothesis",
             "stance": "neutral",
+            "disposition": "open",
         })),
     ])
     investigator = Investigator(store)
@@ -104,6 +110,39 @@ async def test_investigator_neutral_finding_creates_no_stance_edge(store):
     assert len(produced) == 1
     assert await store.get_supporting_evidence(hypothesis.id) == []
     assert await store.get_refuting_evidence(hypothesis.id) == []
+    # a neutral finding never settles the hypothesis: it stays active
+    unchanged = await store.get_node(hypothesis.id)
+    assert unchanged is not None and unchanged.status == "active"
+
+
+@pytest.mark.integration
+async def test_investigator_decisive_contradiction_refutes(store):
+    """A decisive contradicting finding settles the hypothesis the other way: the
+    investigator marks it refuted, recording its rationale as the reason."""
+    case, hypothesis, investigation = await _seed_investigation(store)
+    provider = MockProvider([
+        LLMResponse(content=json.dumps({
+            "content": "the login actually originated from the corporate VPN in Madrid",
+            "rationale": "the session IP resolves to the office range, not Belarus",
+            "stance": "contradicts",
+            "disposition": "refuted",
+        })),
+    ])
+    investigator = Investigator(store)
+
+    work = await investigator.reactions()[0].claim()
+    assert work is not None
+    agent = Agent(
+        investigator, investigator.reactions()[0].execute, work,
+        provider=provider, tools=ToolRegistry([]),
+    )
+    await agent.run()
+
+    refuted = await store.get_node(hypothesis.id)
+    assert refuted is not None and refuted.status == "refuted"
+    assert refuted.refutation_reason == "the session IP resolves to the office range, not Belarus"
+    contradicting = await store.get_refuting_evidence(hypothesis.id)
+    assert len(contradicting) == 1
 
 
 @pytest.mark.integration
@@ -124,6 +163,7 @@ async def test_investigator_fetches_a_skill_and_records_it_applied(store):
             "content": "mfa was recently enrolled from a new device",
             "rationale": "the telemetry shows a new-device MFA enrollment",
             "stance": "supports",
+            "disposition": "open",
         })),
     ])
     investigator = Investigator(store)

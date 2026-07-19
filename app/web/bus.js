@@ -29,10 +29,11 @@ export function connect() {
   sock.onmessage = (message) => {
     const msg = JSON.parse(message.data);
     if (msg.type === "snapshot") emit("graph:snapshot", msg);
+    else if (msg.type && msg.type.startsWith("agent_")) emit("agent:event", msg);
     else emit("graph:event", msg);
   };
   sock.onclose = () => {
-    log(">> socket cerrado - reconectando...");
+    log(">> socket closed, reconnecting...");
     setTimeout(connect, 1000);
   };
 }

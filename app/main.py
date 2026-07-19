@@ -15,8 +15,8 @@ from core.runtime.orchestrator import Orchestrator
 from core.tools.base import ToolRegistry
 from domain.roles.investigator import Investigator
 from domain.roles.planner import Planner
-from domain.roles.synthesizer import Synthesizer
-from domain.roles.theorist import Theorist
+from domain.roles.aggregator import Aggregator
+from domain.roles.proposer import Proposer
 from domain.tools.log_query import LogQueryTool
 
 logger = logging.getLogger("haive.dashboard")
@@ -37,7 +37,14 @@ class EventStream:
 
     def wire(self, orchestrator: Orchestrator) -> None:
         self.orchestrator = orchestrator
-        for event_type in ("node_created", "node_updated", "edge_created"):
+        for event_type in (
+            "node_created",
+            "node_updated",
+            "edge_created",
+            "agent_started",
+            "agent_finished",
+            "agent_failed",
+        ):
             orchestrator.bus.subscribe(event_type, self._forward)
 
     async def send_snapshot(self, ws: WebSocket, workspace: str) -> None:
@@ -103,9 +110,9 @@ async def lifespan(app: FastAPI):
     )
     provider = OpenAIProvider(model=MODEL, api_key=config.OPENAI_API_KEY)
     orchestrator.register(Investigator(orchestrator.store), provider=provider)
-    orchestrator.register(Theorist(orchestrator.store), provider=provider)
+    orchestrator.register(Proposer(orchestrator.store), provider=provider)
     orchestrator.register(Planner(orchestrator.store), provider=provider)
-    orchestrator.register(Synthesizer(orchestrator.store), provider=provider)
+    orchestrator.register(Aggregator(orchestrator.store), provider=provider)
     stream.wire(orchestrator)
     await orchestrator.start()
     app.state.orchestrator = orchestrator

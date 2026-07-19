@@ -4,8 +4,8 @@ import { submitSignal, switchWorkspace, getWorkspace, log } from "../bus.js";
 class SignalForm extends HTMLElement {
   connectedCallback() {
     this.innerHTML = `
-      <input id="signal" placeholder="raw content de la InputSignal..." />
-      <button id="go">investigar</button>
+      <input id="signal" placeholder="raw content of the InputSignal..." />
+      <button id="go">investigate</button>
     `;
     this._input = this.querySelector("#signal");
     this.querySelector("#go").addEventListener("click", () => this._submit());
@@ -19,11 +19,11 @@ class SignalForm extends HTMLElement {
     if (!content) return;
     try {
       const body = await submitSignal(content);
-      log(`>> senal enviada a ${getWorkspace()} (${(body.id || "?").slice(0, 8)}) - investigando...`);
+      log(`>> signal sent to ${getWorkspace()} (${(body.id || "?").slice(0, 8)}): investigating...`);
       this._input.value = "";
       switchWorkspace(getWorkspace()); // re-snapshot: pull in the just-reified roles/LTMs
     } catch (err) {
-      log(">> ERROR enviando la senal: " + err);
+      log(">> ERROR sending the signal: " + err);
     }
   }
 }

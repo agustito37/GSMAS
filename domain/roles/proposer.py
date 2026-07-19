@@ -8,9 +8,10 @@ from core.graph.store import EdgeSpec
 from core.learning.learning_role import LearningRole
 from core.roles.base import Executor, Reaction
 
-logger = logging.getLogger("haive.theorist")
+logger = logging.getLogger("haive.proposer")
 
 BRANCH_LIMIT = 3  # max hypotheses per branch (root_id); the generation hard stop
+CASE_HYPOTHESIS_CAP = 5  # max hypotheses per case; the generative motor stops here (convergence)
 TRIAGE_MAX_ATTEMPTS = 3  # failed judgments on one Evidence before giving up on it
 
 _OPEN_PROMPT = (
@@ -24,25 +25,16 @@ _OPEN_PROMPT = (
 _TRIAGE_PROMPT = (
     "You maintain the hypothesis space of an open investigation. You receive the "
     "case objective, every existing hypothesis (id, status, description) and ONE new "
-    "piece of evidence. Judge conservatively:\n"
-    "(1) new_hypotheses: DEFAULT to []. Before proposing anything, compare each "
-    "candidate against EVERY hypothesis already listed: if any of them expresses the "
-    "same idea, even in different words (e.g. 'account compromised', 'unauthorized "
-    "access', 'account takeover' are the SAME hypothesis), do NOT propose it. Only a "
-    "genuinely DISTINCT explanation the list does not already cover, with a brief "
-    "rationale. Most evidence just supports or weakens existing hypotheses; then "
-    "return []. Never restate a hypothesis that is already there.\n"
-    "(2) refuted: refuting STOPS all work on a hypothesis, so use it only to drop a "
-    "line you can already prove impossible. Refute an ACTIVE hypothesis ONLY on a "
-    "DIRECT FACTUAL CONTRADICTION: the hypothesis asserts X and the evidence proves "
-    "NOT X (e.g. hypothesis 'the login came from Belarus', evidence 'the session "
-    "actually originated in Madrid'). These do NOT refute: evidence that merely fails "
-    "to confirm; an alternative that is also plausible; or a subject DENYING an "
-    "action, because a user denying a password change or MFA enrollment they did not "
-    "make SUPPORTS compromise, it does not refute it. Absence of proof is not "
-    "contradiction. When in doubt, leave the hypothesis ACTIVE; the final call is made "
-    "when the case is weighed as a whole.\n"
-    "Reason only from the given content."
+    "piece of evidence. Your only job is GENERATION: decide new_hypotheses, DEFAULT to "
+    "[]. Before proposing anything, compare each candidate against EVERY hypothesis "
+    "already listed: if any of them expresses the same idea, even in different words "
+    "(e.g. 'account compromised', 'unauthorized access', 'account takeover' are the "
+    "SAME hypothesis), do NOT propose it. Only a genuinely DISTINCT explanation the "
+    "list does not already cover, with a brief rationale. Most evidence just supports "
+    "or weakens existing hypotheses; then return []. Never restate a hypothesis that "
+    "is already there. Do NOT judge whether a hypothesis is true or false: that "
+    "follows from the evidence the investigators attach. Reason only from the given "
+    "content."
 )
 
 
@@ -51,34 +43,29 @@ class _HypothesisOutput(BaseModel):
     rationale: str  # why this is a plausible explanation
 
 
-class _TheoristOutput(BaseModel):
+class _ProposerOutput(BaseModel):
     objective: str
     rationale: str  # why the case is framed this way
     hypotheses: list[_HypothesisOutput]
 
 
-class _Refutation(BaseModel):
-    hypothesis_id: str
-    rationale: str  # why this evidence conclusively refutes it
-
-
 class _TriageOutput(BaseModel):
     new_hypotheses: list[_HypothesisOutput]
-    refuted: list[_Refutation]
 
 
-class Theorist(LearningRole):
-    """Owner of the hypothesis space, with two reactions:
+class Proposer(LearningRole):
+    """Owner of the hypothesis space, purely generative, with two reactions:
     (1) open: on a new InputSignal, open the Case and derive the initial hypotheses.
-    (2) triage (the generative motor): on each new Evidence, judge whether the
-        finding suggests a NEW hypothesis (SUGGESTS edge, parent's branch, max 4 per
-        branch) and/or conclusively refutes an active one (refuted + skip its pending
-        investigations). Marks the Evidence triaged AFTER judging: the mark's event
-        re-wakes the Synthesizer, so closure cannot outrun generation.
-    Singleton while the scope is one case at a time. Learns: its hypothesizing and
-    triage procedures accumulate as skills."""
+    (2) triage (the generative motor): on each new Evidence, judge whether the finding
+        suggests a NEW, distinct hypothesis (SUGGESTS edge, parent's branch, capped per
+        branch). It does NOT decide whether a hypothesis is true or false: that
+        disposition is fixed by the Investigator that finds the deciding evidence. Marks
+        the Evidence triaged AFTER judging: the mark's event re-wakes the Aggregator,
+        so closure cannot outrun generation.
+    Singleton while the scope is one case at a time. Learns: its hypothesizing procedure
+    accumulates as skills."""
 
-    name = "theorist"
+    name = "proposer"
 
     def learning_focus(self) -> str:
         return (
@@ -108,7 +95,7 @@ class Theorist(LearningRole):
     async def _open_case(self, agent: Executor) -> None:
         signal = cast(InputSignal, agent.work)  # the claim only returns InputSignals
         out = await self.reason(
-            agent, system=_OPEN_PROMPT, user=signal.raw_content, schema=_TheoristOutput
+            agent, system=_OPEN_PROMPT, user=signal.raw_content, schema=_ProposerOutput
         )
 
         case = Case(
@@ -146,7 +133,13 @@ class Theorist(LearningRole):
             list[Hypothesis],
             await self.store.query_nodes("Hypothesis", {"case_id": evidence.case_id}),
         )
-        known_ids = {h.id for h in hypotheses}
+        # convergence: stop suggesting once the differential is broad enough (a total
+        # cap per case), so the generative motor does not churn out variants forever.
+        # Still mark the evidence triaged so the Aggregator's quiescence check proceeds.
+        if len(hypotheses) >= CASE_HYPOTHESIS_CAP:
+            await self.store.update_node(evidence.id, {"triaged": True})
+            self._triaging.discard(evidence.id)
+            return
         cases = await self.store.query_nodes("Case", {"case_id": evidence.case_id})
         objective = cast(Case, cases[0]).objective if cases else ""
         parent = await self._parent_hypothesis(evidence.id)
@@ -165,10 +158,9 @@ class Theorist(LearningRole):
             schema=_TriageOutput,
         )
         logger.info(
-            "triage of evidence %s: %d new hypothesis(es), %d refutation(s)",
+            "triage of evidence %s: %d new hypothesis(es)",
             evidence.id[:8],
             len(out.new_hypotheses),
-            len(out.refuted),
         )
 
         for new in out.new_hypotheses:
@@ -183,30 +175,16 @@ class Theorist(LearningRole):
                 hypothesis,
                 evidence.id,
                 BRANCH_LIMIT,
+                CASE_HYPOTHESIS_CAP,
             )
             if not created:
-                logger.warning(
-                    "branch %s full (%d): suggested hypothesis NOT created",
-                    hypothesis.root_id[:8],
+                logger.info(
+                    "cap hit (branch %d / case %d): suggested hypothesis NOT created",
                     BRANCH_LIMIT,
+                    CASE_HYPOTHESIS_CAP,
                 )
 
-        for refutation in out.refuted:
-            if refutation.hypothesis_id not in known_ids:
-                continue  # guard against an LLM inventing ids
-            await self.store.update_node(
-                refutation.hypothesis_id,
-                {"status": "refuted", "refutation_reason": refutation.rationale},
-            )
-            # the refuted line stops consuming work: skip its not-yet-claimed steps
-            for investigation in await self.store.get_investigations_of_hypothesis(
-                refutation.hypothesis_id
-            ):
-                await self.store.skip(
-                    investigation.id, f"hypothesis refuted: {refutation.rationale}"
-                )
-
-        # mark AFTER judging: this update's event re-wakes the Synthesizer, so the
+        # mark AFTER judging: this update's event re-wakes the Aggregator, so the
         # quiescence check always runs after the judgment (no closure race)
         await self.store.update_node(evidence.id, {"triaged": True})
         self._triaging.discard(evidence.id)

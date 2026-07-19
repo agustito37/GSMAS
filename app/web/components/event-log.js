@@ -5,7 +5,7 @@ const MAX_LINES = 60;
 
 class EventLog extends HTMLElement {
   connectedCallback() {
-    this.innerHTML = `<h3>eventos</h3><div id="log"></div>`;
+    this.innerHTML = `<h3>events</h3><div id="log"></div>`;
     this._log = this.querySelector("#log");
     on("log:line", ({ text }) => this._line(text));
   }

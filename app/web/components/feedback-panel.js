@@ -4,7 +4,7 @@ import { on, sendFeedback, log } from "../bus.js";
 
 class FeedbackPanel extends HTMLElement {
   connectedCallback() {
-    this.innerHTML = `<h3>feedback</h3><div id="box">(seleccioná un Verdict)</div>`;
+    this.innerHTML = `<h3>feedback</h3><div id="box">(select a Verdict)</div>`;
     this._box = this.querySelector("#box");
     on("node:select", ({ type, props }) => this._render(type, props));
     on("graph:snapshot", () => this._render(null, {}));
@@ -12,7 +12,7 @@ class FeedbackPanel extends HTMLElement {
 
   _render(type, props) {
     if (type !== "Verdict") {
-      this._box.textContent = "(seleccioná un Verdict)";
+      this._box.textContent = "(select a Verdict)";
       return;
     }
     if (props.feedback) {
@@ -33,9 +33,9 @@ class FeedbackPanel extends HTMLElement {
     try {
       await sendFeedback(verdictId, feedback);
       this._box.textContent = "feedback: " + feedback;
-      log(`>> feedback ${feedback} en verdict ${verdictId.slice(0, 8)} - retrospectivas disparadas`);
+      log(`>> feedback ${feedback} on verdict ${verdictId.slice(0, 8)}: retrospectives triggered`);
     } catch (err) {
-      log(">> ERROR enviando feedback: " + err);
+      log(">> ERROR sending feedback: " + err);
     }
   }
 }

@@ -46,11 +46,10 @@ const STYLE = [
       "line-color": "#7c3aed", "target-arrow-color": "#7c3aed", "line-style": "dashed", width: 2 } },
   // learning edges (visible once a retrospective has run)
   { selector: "edge[kind='HAS_SKILL']", style: { "line-color": "#0d9488", "target-arrow-color": "#0d9488" } },
-  { selector: "edge[kind='APPLIED']", style: {
-      "line-color": "#3182ce", "target-arrow-color": "#3182ce", "line-style": "dotted" } },
-  // vitality / bookkeeping edges to the Case (CORROBORATED_BY, REFUTED_BY, RETROSPECTED)
-  // exist in the graph for traceability, but are HIDDEN here: they cross-link the memory
-  // back to the investigation and tangle the layout. The vitality still lives in the data.
+  // cross-linking bookkeeping edges (APPLIED: work -> skill; CORROBORATED_BY / REFUTED_BY /
+  // RETROSPECTED: memory -> case) exist in the graph for traceability, but are HIDDEN here:
+  // they wire the memory back into the investigation and tangle the layout. Still in the data.
+  { selector: "edge[kind='APPLIED']", style: { display: "none" } },
   { selector: "edge[kind='CORROBORATED_BY']", style: { display: "none" } },
   { selector: "edge[kind='REFUTED_BY']", style: { display: "none" } },
   { selector: "edge[kind='RETROSPECTED']", style: { display: "none" } },
@@ -96,7 +95,7 @@ class GraphView extends HTMLElement {
     msg.nodes.forEach((n) => this._upsert(n.label, n.props));
     msg.edges.forEach((e) => this._addEdge(e.source, e.type, e.target));
     emit("log:line", {
-      text: `snapshot ${msg.workspace || ""}: ${msg.nodes.length} nodos, ${msg.edges.length} aristas`,
+      text: `snapshot ${msg.workspace || ""}: ${msg.nodes.length} nodes, ${msg.edges.length} edges`,
     });
   }
 

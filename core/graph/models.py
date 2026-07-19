@@ -47,7 +47,7 @@ class CaseNode(NodeBase):
 class Case(CaseNode, Claimable, Measured):
     objective: str
     workspace_id: str = "default"
-    rationale: str = ""  # why the Theorist framed the case this way
+    rationale: str = ""  # why the Proposer framed the case this way
     context: str | None = None
     status: Literal["active", "closed", "archived"] = "active"
     closed_at: datetime | None = None
@@ -87,7 +87,7 @@ class Investigation(CaseNode, Claimable, Measured):
 class Evidence(CaseNode, Measured):
     content: str
     rationale: str = ""  # why the agent concluded this finding
-    triaged: bool = False  # True once the Theorist judged it (generate/refute/nothing);
+    triaged: bool = False  # True once the Proposer judged it (suggest a new hypothesis, or not);
     artifact_refs: list[str] = []
 
 

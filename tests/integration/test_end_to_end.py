@@ -17,11 +17,11 @@ from core.providers.base import LLMResponse
 from core.runtime.orchestrator import Orchestrator
 from domain.roles.investigator import Investigator
 from domain.roles.planner import Planner
-from domain.roles.synthesizer import Synthesizer
-from domain.roles.theorist import Theorist
+from domain.roles.aggregator import Aggregator
+from domain.roles.proposer import Proposer
 from tests.mocks.mock_provider import MockProvider
 
-_THEORIST_OUTPUT = json.dumps(
+_PROPOSER_OUTPUT = json.dumps(
     {
         "objective": "determine whether the login is malicious",
         "rationale": "the signal describes an anomalous login",
@@ -33,7 +33,7 @@ _THEORIST_OUTPUT = json.dumps(
 )
 
 # the generative motor triages every Evidence: one call per evidence, judging nothing
-_TRIAGE_NOTHING = json.dumps({"new_hypotheses": [], "refuted": []})
+_TRIAGE_NOTHING = json.dumps({"new_hypotheses": []})
 
 # the Investigator runs with no tool catalog here: an honest empty-handed finding,
 # once per Investigation (2 hypotheses -> 2 investigations)
@@ -42,17 +42,17 @@ _NEUTRAL_FINDING = json.dumps(
         "content": "no telemetry available for this step",
         "rationale": "no tools were available; nothing to examine",
         "stance": "neutral",
+        "disposition": "open",
     }
 )
 
-# the Synthesizer weighs the (neutral) evidence and reasons the verdict; both
-# investigations returned nothing, so 'unresolved' is the grounded call
+# the Aggregator reads the (neutral) evidence and reasons the verdict; both
+# investigations returned nothing, so no hypothesis wins (winner_id empty -> unresolved)
 _VERDICT_OUTPUT = json.dumps(
     {
-        "kind": "unresolved",
+        "winner_id": "",
         "content": "no telemetry was available to settle the case",
         "rationale": "both investigations returned neutral findings",
-        "dispositions": [],  # an unresolved case confirms nothing
     }
 )
 
@@ -97,10 +97,10 @@ async def test_input_signal_reaches_a_verdict(orchestrator):
     store = orchestrator.store
     # 3 responses: 1 opens the case, then one triage per evidence (2)
     orchestrator.register(
-        Theorist(store),
+        Proposer(store),
         provider=MockProvider(
             [
-                LLMResponse(content=_THEORIST_OUTPUT),
+                LLMResponse(content=_PROPOSER_OUTPUT),
                 LLMResponse(content=_TRIAGE_NOTHING),
                 LLMResponse(content=_TRIAGE_NOTHING),
             ]
@@ -122,7 +122,7 @@ async def test_input_signal_reaches_a_verdict(orchestrator):
         ),
     )
     orchestrator.register(
-        Synthesizer(store),
+        Aggregator(store),
         provider=MockProvider([LLMResponse(content=_VERDICT_OUTPUT)]),
     )
 
@@ -153,6 +153,6 @@ async def test_input_signal_reaches_a_verdict(orchestrator):
     assert getattr(verdicts[0], "case_id", None) == case.id
 
     # convergence guard: closure only fires once every Evidence was triaged by the
-    # Theorist (the hypothesis space is stable)
+    # Proposer (the hypothesis space is stable)
     for evidence in await store.query_nodes("Evidence", {"case_id": case.id}):
         assert evidence.triaged is True

@@ -4,6 +4,7 @@
 import { connect } from "./bus.js";
 import "./components/workspace-bar.js";
 import "./components/signal-form.js";
+import "./components/agent-activity.js";
 import "./components/graph-view.js";
 import "./components/node-detail.js";
 import "./components/feedback-panel.js";
